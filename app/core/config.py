@@ -15,9 +15,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Postgres DSN (asyncpg driver)
-    database_url: str = (
-        "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel_rca"
-    )
+    database_url: str = "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel_rca"
 
     # LLM routing toggle: true = use local Ollama, false = use hosted API
     use_local_ollama: bool = True
@@ -42,6 +40,11 @@ class Settings(BaseSettings):
 
     # Circuit breaker
     max_graph_steps: int = 6
+
+    # Observability
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

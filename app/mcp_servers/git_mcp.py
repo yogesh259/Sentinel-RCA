@@ -61,6 +61,49 @@ def _validate_file_path(file_path: str) -> str:
     return cleaned
 
 
+def resolve_victim_file(file_path: str, repo_path: Path | None = None) -> str:
+    """Resolve a bare Java filename or partial path to a relative path inside victim-service.
+
+    Example:
+        'OrderController.java' -> 'src/main/java/com/victim/controller/OrderController.java'
+    """
+    if not file_path or not file_path.strip():
+        return ""
+
+    cleaned = file_path.strip().lstrip("/")
+    if cleaned in ("?", "unknown"):
+        return ""
+
+    cwd = repo_path or DEFAULT_REPO_PATH
+    if not cwd.is_dir():
+        return cleaned
+
+    # Direct match within repo
+    if (cwd / cleaned).is_file():
+        return cleaned
+
+    base_name = Path(cleaned).name
+    # Check known common package roots first
+    for prefix in (
+        "src/main/java/com/victim/controller",
+        "src/main/java/com/victim/service",
+        "src/main/java",
+    ):
+        candidate = cwd / prefix / base_name
+        if candidate.is_file():
+            return str(candidate.relative_to(cwd))
+
+    # General rglob search in repo
+    for match in cwd.rglob(base_name):
+        rel = match.relative_to(cwd)
+        if any(part in (".git", "target", "build", ".gradle") for part in rel.parts):
+            continue
+        if match.is_file():
+            return str(rel)
+
+    return cleaned
+
+
 def _validate_sha(commit_sha: str) -> str:
     """Validate a commit SHA — must be 4-40 hex characters."""
     if not commit_sha or not commit_sha.strip():
@@ -114,6 +157,12 @@ def get_recent_commits(
 
     if not 1 <= limit <= 50:
         raise ValueError("limit must be between 1 and 50")
+
+    cwd = repo_path or DEFAULT_REPO_PATH
+    if cwd.is_dir() and not (cwd / safe_path).is_file():
+        resolved = resolve_victim_file(safe_path, cwd)
+        if (cwd / resolved).is_file():
+            safe_path = resolved
 
     # --format: sha|short|author|date|subject
     raw = _run_git(
@@ -169,6 +218,12 @@ def get_git_blame(
     if line_number < 1:
         raise ValueError("line_number must be >= 1")
 
+    cwd = repo_path or DEFAULT_REPO_PATH
+    if cwd.is_dir() and not (cwd / safe_path).is_file():
+        resolved = resolve_victim_file(safe_path, cwd)
+        if (cwd / resolved).is_file():
+            safe_path = resolved
+
     raw = _run_git(
         [
             "blame",
@@ -190,10 +245,10 @@ def get_git_blame(
         if not commit_sha and len(line) >= 40 and all(c in "0123456789abcdef" for c in line[:40]):
             commit_sha = line[:40]
         elif line.startswith("author "):
-            author = line[len("author "):]
+            author = line[len("author ") :]
         elif line.startswith("author-time "):
             # Unix timestamp — keep raw for simplicity
-            date = line[len("author-time "):]
+            date = line[len("author-time ") :]
         elif line.startswith("\t"):
             content = line[1:]  # strip leading tab
 

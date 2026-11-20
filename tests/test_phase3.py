@@ -188,8 +188,16 @@ class TestLangGraphWorkflow:
         )
 
         with (
-            patch("app.mcp_servers.tracker_mcp.search_existing_issues", new_callable=AsyncMock, return_value=[]),
-            patch("app.mcp_servers.tracker_mcp.create_issue", new_callable=AsyncMock, return_value=fake_issue) as mock_create,
+            patch(
+                "app.mcp_servers.tracker_mcp.search_existing_issues",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.mcp_servers.tracker_mcp.create_issue",
+                new_callable=AsyncMock,
+                return_value=fake_issue,
+            ) as mock_create,
             patch("app.mcp_servers.tracker_mcp.draft_hotfix_pr", new_callable=AsyncMock) as mock_pr,
         ):
             memory_cp = MemorySaver()
@@ -229,8 +237,16 @@ class TestLangGraphWorkflow:
         )
 
         with (
-            patch("app.mcp_servers.tracker_mcp.search_existing_issues", new_callable=AsyncMock, return_value=[]),
-            patch("app.mcp_servers.tracker_mcp.draft_hotfix_pr", new_callable=AsyncMock, return_value=fake_pr) as mock_pr,
+            patch(
+                "app.mcp_servers.tracker_mcp.search_existing_issues",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.mcp_servers.tracker_mcp.draft_hotfix_pr",
+                new_callable=AsyncMock,
+                return_value=fake_pr,
+            ) as mock_pr,
         ):
             from langgraph.types import Command
 
@@ -275,7 +291,9 @@ class TestLangGraphWorkflow:
     @pytest.mark.asyncio
     async def test_circuit_breaker_stops_execution_at_step_6(self):
         """When step_count >= 6, workflow must escalate and not invoke PR tool."""
-        with patch("app.mcp_servers.tracker_mcp.draft_hotfix_pr", new_callable=AsyncMock) as mock_pr:
+        with patch(
+            "app.mcp_servers.tracker_mcp.draft_hotfix_pr", new_callable=AsyncMock
+        ) as mock_pr:
             memory_cp = MemorySaver()
             graph = build_graph(checkpointer=memory_cp)
             thread_id = "test-circuit-breaker"
@@ -356,8 +374,16 @@ class TestFastAPIApprovals:
         )
 
         with (
-            patch("app.mcp_servers.tracker_mcp.search_existing_issues", new_callable=AsyncMock, return_value=[]),
-            patch("app.mcp_servers.tracker_mcp.draft_hotfix_pr", new_callable=AsyncMock, return_value=fake_pr),
+            patch(
+                "app.mcp_servers.tracker_mcp.search_existing_issues",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.mcp_servers.tracker_mcp.draft_hotfix_pr",
+                new_callable=AsyncMock,
+                return_value=fake_pr,
+            ),
         ):
             graph = get_graph()
             thread_id = "thread_sre_approval_test"
@@ -399,3 +425,80 @@ class TestFastAPIApprovals:
 
             # Check removed from pending approvals
             assert get_pending_approval(thread_id) is None
+
+    @pytest.mark.asyncio
+    async def test_trace_verdict_lifecycle_awaiting_approval_to_approved(self, client):
+        """Verify execution trace verdict changes from AWAITING_APPROVAL to APPROVED on decision."""
+        from app.core.observability import get_latest_execution_traces
+        from app.main import run_rca_workflow
+
+        thread_id = "thread_lifecycle_test_verdict"
+        payload = {
+            "action": "created",
+            "data": {
+                "event": {
+                    "culprit": "com.victim.controller.OrderController.createOrder",
+                    "exception": {
+                        "values": [
+                            {
+                                "type": "NullPointerException",
+                                "value": "discountCode is null",
+                                "stacktrace": {
+                                    "frames": [
+                                        {
+                                            "filename": "OrderController.java",
+                                            "lineno": 34,
+                                            "function": "createOrder",
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                }
+            },
+        }
+
+        with (
+            patch(
+                "app.mcp_servers.tracker_mcp.search_existing_issues",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.mcp_servers.tracker_mcp.draft_hotfix_pr",
+                new_callable=AsyncMock,
+            ) as mock_pr,
+        ):
+            mock_pr.return_value = PRPreview(
+                title="hotfix",
+                branch_name="hotfix/123",
+                commit_sha="1234567",
+                file_path="OrderController.java",
+                patch_summary="patch",
+                description="desc",
+                status="draft",
+            )
+            await run_rca_workflow(
+                thread_id=thread_id,
+                incident_id=202,
+                fingerprint="fp_lifecycle_verdict",
+                payload=payload,
+            )
+
+            traces = await get_latest_execution_traces(limit=20)
+            t = next((x for x in traces if x.thread_id == thread_id), None)
+            assert t is not None
+            assert t.final_verdict == "AWAITING_APPROVAL"
+
+            # Now approve as staff_sre
+            decision_resp = client.post(
+                f"/v1/approvals/{thread_id}/decision",
+                json={"decision": "approve", "reviewer_role": "staff_sre"},
+            )
+            assert decision_resp.status_code == 200
+
+            traces_after = await get_latest_execution_traces(limit=20)
+            t_after = next((x for x in traces_after if x.thread_id == thread_id), None)
+            assert t_after is not None
+            assert t_after.final_verdict == "APPROVED"

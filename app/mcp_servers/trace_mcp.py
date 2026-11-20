@@ -17,11 +17,19 @@ from app.core.redaction import redact_payload
 
 # Matches lines like:
 #   at com.victim.controller.OrderController.createOrder(OrderController.java:34)
+#   at com.example.order.OrderController.applyDiscount(OrderController.java:42)
+#   at createOrder(OrderController.java:34)
+#   at (OrderController.java:34)
 _JAVA_FRAME_RE = re.compile(
-    r"at\s+"
-    r"(?P<class_name>[\w$.]+)\."           # fully-qualified class
-    r"(?P<method>[\w<>$]+)"                 # method name
-    r"\((?P<file>[\w.]+):(?P<line>\d+)\)"   # (FileName.java:34)
+    r"(?:at\s+)?"
+    r"(?:(?P<call_target>[\w$.<>]+)\s*)?"
+    r"\((?P<file>[\w.\-]+\.(?:java|kt|scala|groovy)|[\w.\-]+):(?P<line>\d+)\)",
+    re.IGNORECASE,
+)
+
+_JAVA_BARE_FILE_RE = re.compile(
+    r"(?P<file>[\w.\-]+\.java)(?::(?P<line>\d+))?",
+    re.IGNORECASE,
 )
 
 # Matches the exception header:
@@ -35,9 +43,7 @@ _JAVA_EXCEPTION_RE = re.compile(
 # ── Python traceback patterns ────────────────────────────────────
 
 # Matches:  File "foo.py", line 42, in some_func
-_PY_FRAME_RE = re.compile(
-    r'File\s+"(?P<file>[^"]+)",\s+line\s+(?P<line>\d+),\s+in\s+(?P<func>\S+)'
-)
+_PY_FRAME_RE = re.compile(r'File\s+"(?P<file>[^"]+)",\s+line\s+(?P<line>\d+),\s+in\s+(?P<func>\S+)')
 
 # Matches:  ValueError: something went wrong
 _PY_EXCEPTION_RE = re.compile(
@@ -61,18 +67,56 @@ def parse_stack_trace(raw_trace: str) -> ParsedStackTrace:
     java_exc = _JAVA_EXCEPTION_RE.search(sanitised)
 
     if java_frames:
-        # Use the last (deepest / most-recent) frame
-        last = java_frames[-1]
+        # Prefer application frames over third-party framework lines
+        app_frames = [
+            f
+            for f in java_frames
+            if not any(
+                fw in f.group(0).lower()
+                for fw in ("org.springframework", "org.apache", "java.base", "sun.", "jdk.")
+            )
+        ]
+        selected = app_frames[-1] if app_frames else java_frames[-1]
+
         exc_type = java_exc.group("type") if java_exc else "UnknownException"
         exc_msg = (java_exc.group("message") or "") if java_exc else ""
+
+        call_target = selected.group("call_target") or ""
+        if "." in call_target:
+            class_name, method_name = call_target.rsplit(".", 1)
+        else:
+            class_name, method_name = "", call_target
+
+        target_file = selected.group("file")
+        if not class_name and target_file.endswith(".java"):
+            class_name = target_file.removesuffix(".java")
+
+        line_num = int(selected.group("line")) if selected.group("line") else 0
 
         return ParsedStackTrace(
             exception_type=exc_type,
             exception_message=exc_msg.strip(),
-            target_file=last.group("file"),
-            class_name=last.group("class_name"),
-            method_name=last.group("method"),
-            line_number=int(last.group("line")),
+            target_file=target_file,
+            class_name=class_name,
+            method_name=method_name,
+            line_number=line_num,
+            redaction_types=redaction_types,
+        )
+
+    # Check bare Java file fallback
+    bare_match = _JAVA_BARE_FILE_RE.search(sanitised)
+    if bare_match:
+        exc_type = java_exc.group("type") if java_exc else "UnknownException"
+        exc_msg = (java_exc.group("message") or "") if java_exc else ""
+        target_file = bare_match.group("file")
+        line_num = int(bare_match.group("line")) if bare_match.group("line") else 0
+        return ParsedStackTrace(
+            exception_type=exc_type,
+            exception_message=exc_msg.strip(),
+            target_file=target_file,
+            class_name=target_file.removesuffix(".java"),
+            method_name="",
+            line_number=line_num,
             redaction_types=redaction_types,
         )
 

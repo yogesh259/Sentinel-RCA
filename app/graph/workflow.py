@@ -120,11 +120,17 @@ class RCAState(TypedDict, total=False):
 
 async def parse_trace_node(state: RCAState) -> dict:
     """Node 1: Parse raw stack trace via trace_mcp (runs redaction first)."""
+    from app.core.redaction import redact_dict
+    from app.mcp_servers.git_mcp import resolve_victim_file
     from app.mcp_servers.trace_mcp import parse_stack_trace
+
+    payload = state.get("raw_payload", {})
+    dict_redactions: list[str] = []
+    if payload:
+        payload, dict_redactions = redact_dict(payload)
 
     raw = state.get("raw_trace", "")
     if not raw:
-        payload = state.get("raw_payload", {})
         event = payload.get("data", {}).get("event", payload.get("data", {}))
         exc_info = event.get("exception", {})
         values = exc_info.get("values", [])
@@ -134,25 +140,63 @@ async def parse_trace_node(state: RCAState) -> dict:
             exc_val = top.get("value", "")
             frames = top.get("stacktrace", {}).get("frames", [])
             lines = [f"{exc_type}: {exc_val}"]
+            culprit = event.get("culprit", "")
             for f in frames:
                 fn = f.get("filename", "?")
                 ln = f.get("lineno", 0)
                 func = f.get("function", "?")
+                if culprit and "." not in func and culprit.endswith(func):
+                    func = culprit
                 lines.append(f"\tat {func}({fn}:{ln})")
             raw = "\n".join(lines)
 
     parsed = parse_stack_trace(raw)
+    target_file = parsed.target_file
+    line_number = parsed.line_number
+    class_name = parsed.class_name
+    method_name = parsed.method_name
+
+    # Fallback to checking payload frames directly if parsing left target_file empty
+    if not target_file or target_file in ("?", "unknown"):
+        event = payload.get("data", {}).get("event", payload.get("data", {}))
+        exc_info = event.get("exception", {})
+        values = exc_info.get("values", [])
+        if values:
+            frames = values[0].get("stacktrace", {}).get("frames", [])
+            for f in reversed(frames):
+                fn = f.get("filename")
+                if fn and fn not in ("?", "unknown"):
+                    target_file = fn
+                    if not line_number and f.get("lineno"):
+                        try:
+                            line_number = int(f["lineno"])
+                        except (ValueError, TypeError):
+                            pass
+                    if not method_name and f.get("function"):
+                        method_name = str(f["function"])
+                    if not class_name and fn.endswith(".java"):
+                        class_name = fn.removesuffix(".java")
+                    break
+
+    resolved_file = resolve_victim_file(target_file) if target_file else ""
+    final_target = resolved_file or target_file
     current_steps = state.get("step_count", 0)
 
+    combined_redactions = list(parsed.redaction_types)
+    for dr in dict_redactions:
+        if dr not in combined_redactions:
+            combined_redactions.append(dr)
+
     return {
+        "raw_payload": payload,
         "raw_trace": raw,
         "exception_type": parsed.exception_type,
         "exception_message": parsed.exception_message,
-        "target_file": parsed.target_file,
-        "class_name": parsed.class_name,
-        "method_name": parsed.method_name,
-        "line_number": parsed.line_number,
-        "redaction_types": parsed.redaction_types,
+        "target_file": final_target,
+        "class_name": class_name,
+        "method_name": method_name,
+        "line_number": line_number,
+        "redaction_types": combined_redactions,
         "step_count": current_steps + 1,
     }
 
@@ -203,29 +247,32 @@ async def investigate_git_node(state: RCAState) -> dict:
         GitInputValidationError,
         get_commit_diff,
         get_recent_commits,
+        resolve_victim_file,
     )
 
-    target_file = state.get("target_file", "")
+    raw_target_file = state.get("target_file", "")
+    target_file = resolve_victim_file(raw_target_file) if raw_target_file else ""
     exception_type = state.get("exception_type", "")
     exception_message = state.get("exception_message", "")
 
-    candidate_paths = [
-        f"src/main/java/com/victim/controller/{target_file}",
-        f"src/main/java/com/victim/service/{target_file}",
-        target_file,
-    ]
-
     commits: list[CommitInfo] = []
-    for cp in candidate_paths:
-        try:
-            commits = get_recent_commits(cp, limit=5)
-            if commits:
-                break
-        except (GitInputValidationError, RuntimeError, FileNotFoundError):
-            continue
+    if target_file:
+        candidate_paths = [target_file]
+        if "/" not in target_file:
+            candidate_paths.append(f"src/main/java/com/victim/controller/{target_file}")
+            candidate_paths.append(f"src/main/java/com/victim/service/{target_file}")
+
+        for cp in candidate_paths:
+            try:
+                commits = get_recent_commits(cp, limit=5)
+                if commits:
+                    target_file = cp
+                    break
+            except (GitInputValidationError, RuntimeError, FileNotFoundError):
+                continue
 
     suspect_dicts = [c.model_dump() for c in commits]
-    root_cause = f"{exception_type} in {target_file}"
+    root_cause = f"{exception_type} in {target_file}" if target_file else exception_type
     patch_summary = ""
     suggested_severity = state.get("suggested_severity") or "medium"
 
@@ -255,6 +302,7 @@ async def investigate_git_node(state: RCAState) -> dict:
             logger.warning("get_commit_diff error: %s", exc)
 
     return {
+        "target_file": target_file,
         "suspect_commits": suspect_dicts,
         "root_cause": root_cause,
         "suggested_severity": suggested_severity,
@@ -331,12 +379,14 @@ async def authorisation_gate_node(state: RCAState) -> dict:
         )
 
         # Interrupt workflow for human-in-the-loop review
-        hitl_response = interrupt({
-            "type": "approval_required",
-            "thread_id": thread_id,
-            "proposal": proposal.model_dump(),
-            "reason": auth.reason,
-        })
+        hitl_response = interrupt(
+            {
+                "type": "approval_required",
+                "thread_id": thread_id,
+                "proposal": proposal.model_dump(),
+                "reason": auth.reason,
+            }
+        )
 
         # Resumed with Command(resume=...)
         remove_pending_approval(thread_id)

@@ -11,8 +11,10 @@ COPY pyproject.toml uv.lock ./
 # Install production dependencies
 RUN uv sync --frozen --no-dev
 
-# Copy application code
+# Copy application code and console
 COPY app/ app/
+COPY ui/ ui/
+COPY evals/ evals/
 COPY main.py .
 
 EXPOSE 8000

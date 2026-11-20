@@ -24,6 +24,7 @@ class TestRedaction:
 
     def _redact(self, text: str):
         from app.core.redaction import redact_payload
+
         return redact_payload(text)
 
     # ── JWTs ──────────────────────────────────────────────────────
@@ -143,6 +144,67 @@ class TestRedaction:
         _, types = self._redact(text)
         assert types.count("[REDACTED_EMAIL]") == 1
 
+    def test_redact_dict_evt_secrets_leaked_02(self):
+        """Regression test: verify evt_secrets_leaked_02 payload contains zero raw secrets."""
+        import json
+
+        from app.core.redaction import redact_dict
+
+        payload = {
+            "action": "created",
+            "data": {
+                "title": "Authentication & Database Failure with Sensitive Secrets",
+                "event": {
+                    "event_id": "evt_secrets_leaked_02",
+                    "title": "SQLException: Connection failure to db",
+                    "culprit": "com.victim.service.PaymentService.chargeCustomer",
+                    "exception": {
+                        "values": [
+                            {
+                                "type": "SQLException",
+                                "value": (
+                                    "Failed connecting to jdbc:postgresql://sentinel:secret_pass_99@prod-db.internal:5432/orders "
+                                    "with bearer token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIn0.abcdef1234567890 "
+                                    "and stripe key sk-fake-1111111111111111111111 for admin@megacorp.internal"
+                                ),
+                                "stacktrace": {
+                                    "frames": [
+                                        {
+                                            "filename": "PaymentService.java",
+                                            "lineno": 33,
+                                            "function": "chargeCustomer",
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                },
+            },
+        }
+
+        sanitized, types = redact_dict(payload)
+        dumped = json.dumps(sanitized)
+
+        # Assert zero raw secrets remain
+        assert "jdbc:postgresql://" not in dumped
+        assert "secret_pass_99" not in dumped
+        assert "eyJhbGci" not in dumped
+        assert "sk-fake-1111111111111111111111" not in dumped
+        assert "admin@megacorp.internal" not in dumped
+
+        # Assert expected replacement tokens
+        assert "[REDACTED_DB_URI]" in dumped
+        assert "[REDACTED_JWT]" in dumped
+        assert "[REDACTED_API_KEY]" in dumped
+        assert "[REDACTED_EMAIL]" in dumped
+
+        # Assert all 4 redaction labels were tracked
+        assert "[REDACTED_DB_URI]" in types
+        assert "[REDACTED_JWT]" in types
+        assert "[REDACTED_API_KEY]" in types
+        assert "[REDACTED_EMAIL]" in types
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  2. trace_mcp — Stack-trace parsing
@@ -195,12 +257,12 @@ class TestTraceMCP:
         from app.mcp_servers.trace_mcp import parse_stack_trace
 
         raw = (
-            'Traceback (most recent call last):\n'
+            "Traceback (most recent call last):\n"
             '  File "app/main.py", line 42, in handle_request\n'
-            '    result = process(data)\n'
+            "    result = process(data)\n"
             '  File "app/services/processor.py", line 15, in process\n'
             '    raise ValueError("bad input")\n'
-            'ValueError: bad input\n'
+            "ValueError: bad input\n"
         )
         result = parse_stack_trace(raw)
 
@@ -216,6 +278,37 @@ class TestTraceMCP:
         result = parse_stack_trace("")
         assert result.exception_type == "UnknownException"
 
+    def test_parse_simulated_spring_boot_trace_from_console(self):
+        """Regression test: verify Spring Boot stack traces from ui/console.py extract filename."""
+        from app.mcp_servers.trace_mcp import parse_stack_trace
+
+        raw = (
+            "NullPointerException: Cannot invoke String.length() because discountCode is null\n"
+            "\tat createOrder(OrderController.java:34)"
+        )
+        result = parse_stack_trace(raw)
+        assert result.target_file != ""
+        assert result.target_file.endswith(".java")
+        assert result.target_file == "OrderController.java"
+        assert result.line_number == 34
+        assert result.exception_type == "NullPointerException"
+
+    def test_parse_spring_boot_apply_discount_frame(self):
+        """Regression test: verify frames like com.example.order.OrderController.applyDiscount."""
+        from app.mcp_servers.trace_mcp import parse_stack_trace
+
+        raw = (
+            "java.lang.NullPointerException: discountCode is null\n"
+            "\tat com.example.order.OrderController.applyDiscount(OrderController.java:42)"
+        )
+        result = parse_stack_trace(raw)
+        assert result.target_file != ""
+        assert result.target_file.endswith(".java")
+        assert result.target_file == "OrderController.java"
+        assert result.line_number == 42
+        assert result.method_name == "applyDiscount"
+        assert result.class_name == "com.example.order.OrderController"
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  3. git_mcp — Read-only git operations on victim-service
@@ -228,9 +321,7 @@ class TestGitMCP:
     def test_get_recent_commits_for_order_controller(self):
         from app.mcp_servers.git_mcp import get_recent_commits
 
-        commits = get_recent_commits(
-            "src/main/java/com/victim/controller/OrderController.java"
-        )
+        commits = get_recent_commits("src/main/java/com/victim/controller/OrderController.java")
         assert len(commits) >= 1
         # At least one commit message should mention "discount" (commit #4)
         messages = [c.message for c in commits]
@@ -244,9 +335,7 @@ class TestGitMCP:
             "src/main/java/com/victim/controller/OrderController.java",
             limit=10,
         )
-        discount_commit = next(
-            (c for c in commits if "discount" in c.message.lower()), None
-        )
+        discount_commit = next((c for c in commits if "discount" in c.message.lower()), None)
         assert discount_commit is not None
 
         diff = get_commit_diff(discount_commit.sha)
@@ -326,6 +415,23 @@ class TestGitMCP:
 
         with pytest.raises(GitInputValidationError, match="must not be empty"):
             get_commit_diff("")
+
+    def test_resolve_victim_file(self):
+        from app.mcp_servers.git_mcp import resolve_victim_file
+
+        assert (
+            resolve_victim_file("OrderController.java")
+            == "src/main/java/com/victim/controller/OrderController.java"
+        )
+        assert (
+            resolve_victim_file("PaymentService.java")
+            == "src/main/java/com/victim/service/PaymentService.java"
+        )
+        assert (
+            resolve_victim_file("src/main/java/com/victim/controller/OrderController.java")
+            == "src/main/java/com/victim/controller/OrderController.java"
+        )
+        assert resolve_victim_file("") == ""
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -27,6 +27,8 @@ attrs==26.1.0
     # via
     #   jsonschema
     #   referencing
+backoff==2.2.1
+    # via langfuse
 certifi==2026.10.23
     # via
     #   httpcore
@@ -60,6 +62,8 @@ google-auth==2.62.2
     # via google-genai
 google-genai==3.6.1
     # via langchain-google-genai
+googleapis-common-protos==1.76.0
+    # via opentelemetry-exporter-otlp-proto-http
 h11==0.16.0
     # via
     #   httpcore
@@ -74,6 +78,7 @@ httptools==0.9.0
 httpx==0.28.1
     # via
     #   langchain-core
+    #   langfuse
     #   langgraph-sdk
     #   ollama
     #   sentinel-rca
@@ -131,6 +136,8 @@ langchain-protocol==0.0.21
     # via
     #   langchain-core
     #   langgraph-sdk
+langfuse==5.2.0
+    # via sentinel-rca
 langgraph==1.2.23
     # via sentinel-rca
 langgraph-checkpoint==4.3.2
@@ -171,7 +178,31 @@ openai==3.57.0
 opentelemetry-api==1.45.2
     # via
     #   fastapi
+    #   langfuse
     #   mcp
+    #   opentelemetry-exporter-http-transport
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-exporter-http-transport==0.66b2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-common==0.66b2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-common==1.45.2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-http==1.45.2
+    # via langfuse
+opentelemetry-proto==1.45.2
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk==1.45.2
+    # via
+    #   langfuse
+    #   opentelemetry-exporter-otlp-common
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-semantic-conventions==0.66b2
+    # via opentelemetry-sdk
 orjson==3.13.0
     # via
     #   langgraph-checkpoint-postgres
@@ -183,6 +214,7 @@ packaging==26.3
     # via
     #   altair
     #   langchain-core
+    #   langfuse
     #   langsmith
     #   pytest
     #   streamlit
@@ -192,8 +224,13 @@ pillow==13.0.0
     # via streamlit
 pluggy==1.7.0
     # via pytest
+prometheus-client==0.26.0
+    # via sentinel-rca
 protobuf==7.36.2
-    # via streamlit
+    # via
+    #   googleapis-common-protos
+    #   opentelemetry-proto
+    #   streamlit
 psycopg==3.3.9
     # via
     #   langgraph-checkpoint-postgres
@@ -216,6 +253,7 @@ pydantic==2.14.4
     #   google-genai
     #   langchain-core
     #   langchain-google-genai
+    #   langfuse
     #   langgraph
     #   langsmith
     #   mcp
@@ -266,6 +304,8 @@ requests==2.34.2
     #   google-auth
     #   google-genai
     #   langsmith
+    #   opentelemetry-exporter-http-transport
+    #   opentelemetry-exporter-otlp-proto-http
     #   requests-toolbelt
     #   streamlit
     #   tiktoken
@@ -310,11 +350,15 @@ typing-extensions==4.16.0
     #   httpx2
     #   langchain-core
     #   langchain-protocol
+    #   langfuse
     #   langsmith
     #   mcp
     #   mcp-types
     #   openai
     #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
     #   psycopg
     #   psycopg-pool
     #   pydantic
@@ -360,6 +404,8 @@ websockets==17.4
     #   langsmith
     #   streamlit
     #   uvicorn
+wrapt==2.5.2
+    # via langfuse
 xxhash==4.1.0
     # via
     #   langgraph

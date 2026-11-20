@@ -391,7 +391,9 @@ def main() -> None:
     # Highlight the bugs
     print("🐛 Bugs planted:")
     print("   Commit #4 → NullPointerException on null discountCode  (OrderController.java:34)")
-    print("   Commit #6 → Database connection leak — conn.close() missing  (PaymentService.java:33)")
+    print(
+        "   Commit #6 → Database connection leak — conn.close() missing  (PaymentService.java:33)"
+    )
 
 
 if __name__ == "__main__":

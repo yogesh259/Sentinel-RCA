@@ -116,7 +116,9 @@ class FakeRedis:
     def __init__(self):
         self._store: dict[str, str] = {}
 
-    async def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None) -> bool | None:
+    async def set(
+        self, key: str, value: str, *, nx: bool = False, ex: int | None = None
+    ) -> bool | None:
         if nx and key in self._store:
             return None  # key exists — SETNX returns None
         self._store[key] = value

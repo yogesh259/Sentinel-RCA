@@ -89,8 +89,7 @@ def check_authorisation(
         return AuthResult(
             decision=AuthDecision.BLOCKED,
             reason=(
-                f"Circuit breaker triggered: step_count ({step_count}) >= {max_steps}. "
-                "Escalating."
+                f"Circuit breaker triggered: step_count ({step_count}) >= {max_steps}. Escalating."
             ),
             proposal=proposal.model_copy(update={"action": "escalate"}),
         )

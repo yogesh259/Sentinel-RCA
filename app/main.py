@@ -3,18 +3,33 @@
 Phase 1: Webhook gateway with HMAC verification & Redis storm suppression.
 Phase 2: Redaction middleware & isolated MCP tools.
 Phase 3: LangGraph stateful coordinator, BackgroundTask worker & RBAC approval gate.
+Phase 4: Dual observability (Prometheus /metrics + Postgres execution traces).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
 from langgraph.types import Command
 
+from app.core.observability import (
+    ExecutionTrace,
+    ensure_traces_table,
+    get_latest_execution_traces,
+    get_prometheus_metrics,
+    record_execution_trace,
+    track_llm_cost_metric,
+    track_llm_tokens_metric,
+    track_redaction_metric,
+    track_webhook_metric,
+    update_execution_trace_verdict,
+)
+from app.core.redaction import redact_dict
 from app.core.schemas import (
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
@@ -28,6 +43,7 @@ from app.graph.workflow import (
     get_pending_approval,
     remove_pending_approval,
 )
+from app.mcp_servers.tracker_mcp import ensure_issues_table
 from app.services.postgres import close_pool, ensure_tables, insert_incident
 from app.services.redis_dedup import (
     check_and_set_dedup,
@@ -49,26 +65,94 @@ async def run_rca_workflow(
     fingerprint: str,
     payload: dict,
 ) -> None:
-    """Execute the LangGraph RCA workflow in the background."""
+    """Execute the LangGraph RCA workflow in the background and record telemetry."""
     logger.info(
         "Executing RCA workflow in background: thread_id=%s incident_id=%s",
         thread_id,
         incident_id,
     )
+    t0 = time.perf_counter()
     graph = get_graph()
     config = {"configurable": {"thread_id": thread_id}}
+    sanitized_payload, p_types = redact_dict(payload)
     initial_state = {
         "thread_id": thread_id,
         "incident_id": incident_id,
         "fingerprint": fingerprint,
-        "raw_payload": payload,
+        "raw_payload": sanitized_payload,
     }
     try:
         final_state = await graph.ainvoke(initial_state, config=config)
+        latency_ms = (time.perf_counter() - t0) * 1000
         logger.info(
-            "Workflow finished for %s: status=%s",
+            "Workflow finished for %s: status=%s in %.2fms",
             thread_id,
             final_state.get("status"),
+            latency_ms,
+        )
+
+        cost_info = final_state.get("cost", {})
+        tokens_used = cost_info.get("tokens_used", 0)
+        cost_usd = cost_info.get("cost_usd", 0.0)
+
+        if tokens_used > 0:
+            track_llm_tokens_metric(
+                tier="deep" if tokens_used > 500 else "triage",
+                tokens=tokens_used,
+            )
+        if cost_usd > 0.0:
+            track_llm_cost_metric(cost_usd)
+
+        all_redactions = set(final_state.get("redaction_types", [])) | set(p_types)
+        for r_type in all_redactions:
+            track_redaction_metric(r_type)
+
+        nodes_visited = [
+            "parse_trace",
+            "semantic_dedup",
+            "investigate_git",
+            "authorisation_gate",
+        ]
+        if final_state.get("status") in ("completed", "escalated", "rejected"):
+            nodes_visited.append("execute_action")
+
+        tool_calls: list[dict] = []
+        if final_state.get("suspect_commits"):
+            tool_calls.append(
+                {
+                    "tool": "git_mcp.get_recent_commits",
+                    "file": final_state.get("target_file"),
+                }
+            )
+            tool_calls.append(
+                {
+                    "tool": "git_mcp.get_commit_diff",
+                    "sha": final_state["suspect_commits"][0].get("sha"),
+                }
+            )
+        if final_state.get("result"):
+            action = final_state.get("proposal", {}).get("action", "unknown")
+            tool_calls.append({"tool": f"tracker_mcp.{action}", "result": final_state["result"]})
+
+        is_interrupted = bool(final_state.get("__interrupt__")) or (
+            get_pending_approval(thread_id) is not None
+        )
+        if is_interrupted:
+            verdict = "AWAITING_APPROVAL"
+        else:
+            verdict = final_state.get("status") or "completed"
+
+        await record_execution_trace(
+            thread_id=thread_id,
+            incident_id=incident_id,
+            fingerprint=fingerprint,
+            redacted_payload=sanitized_payload,
+            nodes_visited=nodes_visited,
+            mcp_tool_calls=tool_calls,
+            latency_ms=latency_ms,
+            token_cost=cost_usd,
+            tokens_used=tokens_used,
+            final_verdict=verdict,
         )
     except Exception as exc:
         logger.error("RCA background workflow failed for %s: %s", thread_id, exc, exc_info=True)
@@ -83,9 +167,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting Sentinel-RCA …")
     try:
         await ensure_tables()
+        await ensure_issues_table()
+        await ensure_traces_table()
         logger.info("Postgres tables ensured.")
-    except Exception:
-        logger.warning("Postgres not available — running without DB persistence.")
+    except Exception as exc:
+        logger.warning("Postgres init failed (%s) — running without DB persistence.", exc)
     yield
     await close_redis()
     await close_pool()
@@ -94,7 +180,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="Sentinel-RCA",
-    version="0.3.0",
+    version="0.4.0",
     description="Self-hosted Error RCA engine with MCP, LangGraph, and deterministic RBAC",
     lifespan=lifespan,
 )
@@ -148,12 +234,17 @@ async def sentry_webhook(
 
     # Step 1: HMAC-SHA256 verification
     if not verify_signature(body, x_webhook_signature):
+        track_webhook_metric(status="rejected")
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
-    payload: dict = json.loads(body)
+    raw_payload: dict = json.loads(body)
+    redacted_payload, applied_redactions = redact_dict(raw_payload)
+
+    for r_type in applied_redactions:
+        track_redaction_metric(r_type)
 
     # Step 2: Extract exception metadata
-    exception_type, file_name, line_number, title = _extract_exception_info(payload)
+    exception_type, file_name, line_number, title = _extract_exception_info(redacted_payload)
 
     # Step 3: Deterministic fingerprint
     fingerprint = compute_fingerprint(exception_type, file_name, line_number)
@@ -165,6 +256,7 @@ async def sentry_webhook(
         logger.info(
             "Deduplicated event (fingerprint=%s, dup_count=%d)", fingerprint[:12], dup_count
         )
+        track_webhook_metric(status="deduplicated")
         return WebhookResponse(
             status="deduplicated",
             fingerprint=fingerprint,
@@ -181,13 +273,14 @@ async def sentry_webhook(
             file_name=file_name,
             line_number=line_number,
             title=title,
-            raw_payload=payload,
+            raw_payload=redacted_payload,
         )
         logger.info("Queued incident #%d (fingerprint=%s)", incident_id, fingerprint[:12])
     except Exception:
         logger.warning("Postgres insert failed — incident queued in-memory only.")
 
     thread_id = f"thread_{fingerprint[:16]}"
+    track_webhook_metric(status="queued")
 
     # Step 6: Dispatch LangGraph workflow via BackgroundTasks
     background_tasks.add_task(
@@ -195,7 +288,7 @@ async def sentry_webhook(
         thread_id=thread_id,
         incident_id=incident_id,
         fingerprint=fingerprint,
-        payload=payload,
+        payload=redacted_payload,
     )
 
     return WebhookResponse(
@@ -268,6 +361,41 @@ async def submit_approval_decision(
 
     remove_pending_approval(thread_id)
 
+    # Update trace verdict in Postgres & in-memory buffer
+    updated_verdict = "REJECTED" if body.decision == "reject" else "APPROVED"
+
+    try:
+        extra_tools: list[dict] = []
+        if resumed_state.get("result"):
+            res_action = resumed_state.get("proposal", {}).get("action", action)
+            extra_tools.append(
+                {"tool": f"tracker_mcp.{res_action}", "result": resumed_state["result"]}
+            )
+
+        traces = await get_latest_execution_traces(limit=50)
+        existing_trace = next((t for t in traces if t.thread_id == thread_id), None)
+        nodes = (
+            list(existing_trace.nodes_visited)
+            if existing_trace
+            else ["parse_trace", "semantic_dedup", "investigate_git", "authorisation_gate"]
+        )
+        if "execute_action" not in nodes and body.decision == "approve":
+            nodes.append("execute_action")
+
+        tools = list(existing_trace.mcp_tool_calls) if existing_trace else []
+        for et in extra_tools:
+            if et not in tools:
+                tools.append(et)
+
+        await update_execution_trace_verdict(
+            thread_id=thread_id,
+            final_verdict=updated_verdict,
+            nodes_visited=nodes,
+            mcp_tool_calls=tools,
+        )
+    except Exception as exc:
+        logger.warning("Could not update trace verdict for thread %s: %s", thread_id, exc)
+
     return ApprovalDecisionResponse(
         status="resumed",
         decision=body.decision,
@@ -276,6 +404,22 @@ async def submit_approval_decision(
         workflow_status=resumed_state.get("status"),
         result=resumed_state.get("result"),
     )
+
+
+# ── Dual Observability Endpoints ───────────────────────────────────
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus metrics endpoint."""
+    content, content_type = get_prometheus_metrics()
+    return Response(content=content, media_type=content_type)
+
+
+@app.get("/v1/traces", response_model=list[ExecutionTrace])
+async def list_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
+    """Retrieve structured execution traces for live UI console."""
+    return await get_latest_execution_traces(limit=limit)
 
 
 # ── Health ─────────────────────────────────────────────────────────

@@ -8,6 +8,8 @@ Exposes:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import asyncpg
 
 from app.core.config import settings
@@ -27,8 +29,12 @@ async def _get_pool() -> asyncpg.Pool:
     return _pool
 
 
+_table_ensured = False
+
+
 async def ensure_issues_table() -> None:
     """Create the issues table if it does not exist."""
+    global _table_ensured
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -52,6 +58,16 @@ async def ensure_issues_table() -> None:
             ON issues (exception_type, file_name);
             """
         )
+    _table_ensured = True
+
+
+async def _ensure_table_once() -> None:
+    global _table_ensured
+    if not _table_ensured:
+        try:
+            await ensure_issues_table()
+        except Exception:
+            pass
 
 
 # ── Public API ────────────────────────────────────────────────────
@@ -62,7 +78,9 @@ async def search_existing_issues(
     file_name: str,
 ) -> list[IssueRecord]:
     """Find existing issues matching the exception type and file name."""
+    await _ensure_table_once()
     pool = await _get_pool()
+    base_file = Path(file_name).name if file_name else ""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -70,12 +88,16 @@ async def search_existing_issues(
                    commit_sha, severity, status, created_at
             FROM issues
             WHERE exception_type = $1
-              AND file_name = $2
+              AND (
+                  file_name = $2
+                  OR ($3 <> '' AND (file_name = $3 OR file_name LIKE '%' || $3))
+              )
             ORDER BY created_at DESC
             LIMIT 20;
             """,
             exception_type,
             file_name,
+            base_file,
         )
 
     return [
@@ -106,6 +128,7 @@ async def create_issue(
     if severity not in ("low", "medium", "high", "critical"):
         raise ValueError(f"severity must be one of low/medium/high/critical, got {severity!r}")
 
+    await _ensure_table_once()
     pool = await _get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(

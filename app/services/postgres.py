@@ -21,7 +21,7 @@ async def get_pool() -> asyncpg.Pool:
 
 
 async def ensure_tables() -> None:
-    """Create the incidents table (and pgvector extension) if not present."""
+    """Create the incidents, issues tables (and pgvector extension) if not present."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
@@ -46,6 +46,31 @@ async def ensure_tables() -> None:
             ON incidents (fingerprint);
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS issues (
+                id              SERIAL PRIMARY KEY,
+                title           TEXT NOT NULL,
+                exception_type  TEXT NOT NULL,
+                file_name       TEXT NOT NULL DEFAULT '',
+                root_cause      TEXT NOT NULL DEFAULT '',
+                commit_sha      TEXT NOT NULL DEFAULT '',
+                severity        TEXT NOT NULL DEFAULT 'medium',
+                status          TEXT NOT NULL DEFAULT 'open',
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_issues_exception_file
+            ON issues (exception_type, file_name);
+            """
+        )
+
+
+# Alias for explicit database initialization
+init_db = ensure_tables
 
 
 async def insert_incident(
