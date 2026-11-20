@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
-
 
 # ── trace_mcp schemas ─────────────────────────────────────────────
 
@@ -62,7 +60,7 @@ class BlameEntry(BaseModel):
 class IssueRecord(BaseModel):
     """An entry in the issues tracking table."""
 
-    id: Optional[int] = None
+    id: int | None = None
     title: str
     exception_type: str
     file_name: str
@@ -70,7 +68,7 @@ class IssueRecord(BaseModel):
     commit_sha: str = ""
     severity: str = "medium"
     status: str = "open"
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
 
 
 class PRPreview(BaseModel):

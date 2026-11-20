@@ -30,8 +30,8 @@ _PATTERNS: Final[list[tuple[str, re.Pattern[str]]]] = [
         ),
     ),
     # API keys / secrets — common vendor prefixes
-    # OpenAI sk-..., GitHub ghp_/gho_/ghs_/ghr_, AWS AKIA..., Stripe sk_live_/sk_test_/pk_live_/pk_test_,
-    # Slack xoxb-/xoxp-/xoxs-, generic patterns
+    # OpenAI sk-..., GitHub ghp_/gho_/ghs_/ghr_, AWS AKIA...,
+    # Stripe sk_live_/sk_test_/pk_live_/pk_test_, Slack xoxb-/xoxp-/xoxs-
     (
         "[REDACTED_API_KEY]",
         re.compile(

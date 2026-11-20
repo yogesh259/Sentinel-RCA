@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import asyncpg
 
 from app.core.config import settings
 
-_pool: Optional[asyncpg.Pool] = None
+_pool: asyncpg.Pool | None = None
 
 # asyncpg expects a plain postgresql:// DSN (no +asyncpg driver suffix)
 _DSN_CLEAN = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
@@ -65,7 +63,9 @@ async def insert_incident(
     async with pool.acquire() as conn:
         row_id: int = await conn.fetchval(
             """
-            INSERT INTO incidents (fingerprint, exception_type, file_name, line_number, title, raw_payload)
+            INSERT INTO incidents (
+                fingerprint, exception_type, file_name, line_number, title, raw_payload
+            )
             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
             RETURNING id;
             """,

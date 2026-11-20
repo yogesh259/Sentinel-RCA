@@ -9,11 +9,10 @@ All tests are deterministic.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  1. PII / Secret Redaction
@@ -239,7 +238,7 @@ class TestGitMCP:
 
     def test_commit_4_is_npe_bug(self):
         """Commit #4 (discount code) should be retrievable and contain the NPE line."""
-        from app.mcp_servers.git_mcp import get_recent_commits, get_commit_diff
+        from app.mcp_servers.git_mcp import get_commit_diff, get_recent_commits
 
         commits = get_recent_commits(
             "src/main/java/com/victim/controller/OrderController.java",
@@ -267,7 +266,7 @@ class TestGitMCP:
         assert blame.line_content  # non-empty
 
     def test_get_commit_diff(self):
-        from app.mcp_servers.git_mcp import get_recent_commits, get_commit_diff
+        from app.mcp_servers.git_mcp import get_commit_diff, get_recent_commits
 
         commits = get_recent_commits(
             "src/main/java/com/victim/controller/OrderController.java",
@@ -368,7 +367,7 @@ class TestTrackerMCP:
             "commit_sha": "4c91256",
             "severity": "high",
             "status": "open",
-            "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+            "created_at": datetime(2024, 1, 15, tzinfo=UTC),
         }
         self.mock_conn.fetchrow = AsyncMock(return_value=fake_row)
 
@@ -415,7 +414,7 @@ class TestTrackerMCP:
                 "commit_sha": "4c91256",
                 "severity": "high",
                 "status": "open",
-                "created_at": datetime(2024, 1, 15, tzinfo=timezone.utc),
+                "created_at": datetime(2024, 1, 15, tzinfo=UTC),
             },
         ]
         self.mock_conn.fetch = AsyncMock(return_value=fake_rows)

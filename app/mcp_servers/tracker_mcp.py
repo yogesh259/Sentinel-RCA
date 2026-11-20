@@ -8,9 +8,6 @@ Exposes:
 
 from __future__ import annotations
 
-import json
-from typing import Optional
-
 import asyncpg
 
 from app.core.config import settings
@@ -19,7 +16,7 @@ from app.core.mcp_schemas import IssueRecord, PRPreview
 # asyncpg expects plain postgresql:// DSN
 _DSN_CLEAN = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-_pool: Optional[asyncpg.Pool] = None
+_pool: asyncpg.Pool | None = None
 
 
 async def _get_pool() -> asyncpg.Pool:

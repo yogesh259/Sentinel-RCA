@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
-
 
 # ── Inbound Sentry webhook payload ─────────────────────────────────
 
@@ -16,7 +15,7 @@ class SentryException(BaseModel):
 
     type: str = Field(..., description="Exception class, e.g. NullPointerException")
     value: str = Field("", description="Exception message")
-    module: Optional[str] = Field(None, description="Module / package")
+    module: str | None = Field(None, description="Module / package")
 
 
 class SentryStacktraceFrame(BaseModel):
@@ -25,7 +24,7 @@ class SentryStacktraceFrame(BaseModel):
     filename: str = ""
     lineno: int = 0
     function: str = ""
-    context_line: Optional[str] = None
+    context_line: str | None = None
 
 
 class SentryStacktrace(BaseModel):
@@ -35,7 +34,7 @@ class SentryStacktrace(BaseModel):
 class SentryExceptionEntry(BaseModel):
     type: str = Field(..., description="Exception class")
     value: str = Field("", description="Exception message")
-    stacktrace: Optional[SentryStacktrace] = None
+    stacktrace: SentryStacktrace | None = None
 
 
 class SentryEventData(BaseModel):
@@ -43,9 +42,9 @@ class SentryEventData(BaseModel):
 
     event_id: str = ""
     title: str = ""
-    culprit: Optional[str] = None
-    timestamp: Optional[float] = None
-    exception: Optional[dict] = None  # raw exception payload
+    culprit: str | None = None
+    timestamp: float | None = None
+    exception: dict | None = None  # raw exception payload
 
 
 class SentryWebhookPayload(BaseModel):
@@ -53,7 +52,7 @@ class SentryWebhookPayload(BaseModel):
 
     action: str = "created"
     data: dict = Field(default_factory=dict)
-    actor: Optional[dict] = None
+    actor: dict | None = None
 
 
 # ── API response schemas ───────────────────────────────────────────
@@ -61,9 +60,10 @@ class SentryWebhookPayload(BaseModel):
 
 class WebhookResponse(BaseModel):
     status: str
-    fingerprint: Optional[str] = None
-    duplicate_count: Optional[int] = None
-    incident_id: Optional[str] = None
+    fingerprint: str | None = None
+    duplicate_count: int | None = None
+    incident_id: str | None = None
+    thread_id: str | None = None
     llm_cost: str = "$0"
 
 
@@ -73,7 +73,7 @@ class WebhookResponse(BaseModel):
 class IncidentRecord(BaseModel):
     """Represents a row in the incidents table."""
 
-    id: Optional[int] = None
+    id: int | None = None
     fingerprint: str
     exception_type: str
     file_name: str
@@ -81,4 +81,35 @@ class IncidentRecord(BaseModel):
     title: str
     raw_payload: dict
     status: str = "queued"
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
+
+
+# ── Human-in-the-Loop Approvals ───────────────────────────────────
+
+
+class ApprovalItem(BaseModel):
+    """A paused RCA thread awaiting human decision."""
+
+    thread_id: str
+    incident_id: int | None = None
+    proposal: dict
+    reason: str
+    status: str = "awaiting_approval"
+
+
+class ApprovalDecisionRequest(BaseModel):
+    """Request payload for POST /v1/approvals/{thread_id}/decision."""
+
+    decision: Literal["approve", "reject"]
+    reviewer_role: Literal["staff_sre", "junior_dev"]
+
+
+class ApprovalDecisionResponse(BaseModel):
+    """Response payload for POST /v1/approvals/{thread_id}/decision."""
+
+    status: str
+    decision: str
+    reviewer_role: str
+    thread_id: str
+    workflow_status: str | None = None
+    result: dict | None = None

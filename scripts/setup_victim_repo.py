@@ -12,7 +12,6 @@ Creates 6 commits with OrderController.java and PaymentService.java:
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import textwrap

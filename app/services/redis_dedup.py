@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Optional
 
 import redis.asyncio as aioredis
 
 from app.core.config import settings
 
 # Module-level client — initialised lazily via get_redis()
-_redis_client: Optional[aioredis.Redis] = None
+_redis_client: aioredis.Redis | None = None
 
 
 async def get_redis() -> aioredis.Redis:
