@@ -1,0 +1,42 @@
+services:
+  # ── FastAPI backend ────────────────────────────────────────────────
+  - type: web
+    name: sentinel-rca-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_DAILY_LIMIT
+        value: "30"
+      - key: RATE_LIMIT_PER_HOUR
+        value: "5"
+      - key: LOCAL_REPO_PATH
+        value: "./victim-service"
+    healthCheckPath: /health
+
+  # ── Streamlit Ops Console ──────────────────────────────────────────
+  - type: web
+    name: sentinel-rca-ui
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerCommand: uv run streamlit run ui/console.py --server.port=8501 --server.address=0.0.0.0
+    envVars:
+      - key: API_BASE_URL
+        fromService:
+          type: web
+          name: sentinel-rca-api
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: WEBHOOK_SECRET
+        fromService:
+          type: web
+          name: sentinel-rca-api
+          envVarKey: WEBHOOK_SECRET

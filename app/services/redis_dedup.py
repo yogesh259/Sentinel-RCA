@@ -1,8 +1,9 @@
-"""Redis client and storm-suppression (deduplication) helpers."""
+"""Redis client, storm-suppression (deduplication), and rate-limiting helpers."""
 
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 
@@ -58,6 +59,34 @@ async def check_and_set_dedup(
         # Duplicate — increment counter
         count = await r.incr(counter_key)
         return False, int(count)
+
+
+async def check_rate_limit(client_ip: str) -> bool:
+    """Check per-IP/hour and global/day rate limits using INCR + EXPIRE.
+
+    Returns True if the request is within limits and may use live Groq.
+    Returns False if the caller should fall back to Simulation Mode.
+    """
+    r = await get_redis()
+
+    # Per-IP hourly limit
+    ip_key = f"sentinel:rate:ip:{client_ip}"
+    ip_count = await r.incr(ip_key)
+    if ip_count == 1:
+        await r.expire(ip_key, 3600)
+    if ip_count > settings.rate_limit_per_hour:
+        return False
+
+    # Global daily limit
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    global_key = f"sentinel:rate:global:{today}"
+    global_count = await r.incr(global_key)
+    if global_count == 1:
+        await r.expire(global_key, 86400)
+    if global_count > settings.groq_daily_limit:
+        return False
+
+    return True
 
 
 async def close_redis() -> None:

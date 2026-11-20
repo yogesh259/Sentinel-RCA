@@ -1,4 +1,4 @@
-"""Pydantic v2 schemas for Sentry webhook payloads and API responses."""
+"""Pydantic v2 schemas for webhook payloads and API responses."""
 
 from __future__ import annotations
 
@@ -55,16 +55,34 @@ class SentryWebhookPayload(BaseModel):
     actor: dict | None = None
 
 
+# ── Generic incident payload (non-Sentry) ─────────────────────────
+
+
+class IncidentEvent(BaseModel):
+    """Generic incident payload: service + error + stack_trace."""
+
+    service: str = ""
+    error: str = ""
+    stack_trace: str = ""
+
+
 # ── API response schemas ───────────────────────────────────────────
 
 
-class WebhookResponse(BaseModel):
+class IngestResponse(BaseModel):
+    """Response from POST /v1/incidents/ingest."""
+
     status: str
     fingerprint: str | None = None
     duplicate_count: int | None = None
     incident_id: str | None = None
     thread_id: str | None = None
+    mode: str = ""  # "LIVE_GROQ" | "SIMULATION"
     llm_cost: str = "$0"
+
+
+# Keep backward-compatible alias
+WebhookResponse = IngestResponse
 
 
 # ── Postgres incident record ──────────────────────────────────────

@@ -6,45 +6,35 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Application settings with defaults suitable for local development."""
+    """Application settings — only the variables defined in ARCHITECTURE.md §6."""
 
-    # Webhook HMAC-SHA256 shared secret
-    webhook_secret: str = "change-me-to-a-real-secret"
-
-    # Redis URL for storm suppression
-    redis_url: str = "redis://localhost:6379/0"
-
-    # Postgres DSN (asyncpg driver)
+    # Neon Postgres DSN
     database_url: str = "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel_rca"
 
-    # LLM routing toggle: true = use local Ollama, false = use hosted API
-    use_local_ollama: bool = True
+    # Upstash Redis URL
+    redis_url: str = "redis://localhost:6379/0"
 
-    # Deduplication fingerprint TTL in seconds (30 minutes)
-    dedup_ttl_seconds: int = 1800
+    # Webhook HMAC-SHA256 shared secret
+    webhook_secret: str = ""
 
-    # ── LLM Configuration ──────────────────────────────────────────
-    # Triage tier (local Ollama)
-    ollama_triage_model: str = "llama3.2"
-    ollama_base_url: str = "http://localhost:11434"
+    # Groq API key — empty means Simulation Mode
+    groq_api_key: str = ""
 
-    # Triage tier (hosted — when USE_LOCAL_OLLAMA=false)
-    hosted_triage_model: str = "gemini-2.0-flash"
+    # Rate limiting
+    groq_daily_limit: int = 30
+    rate_limit_per_hour: int = 5
 
-    # Deep RCA tier (frontier model)
-    deep_rca_model: str = "gemini-2.0-flash"
+    # Git repo path for git_mcp
+    local_repo_path: str = "./victim-service"
 
-    # API keys
-    google_api_key: str = ""
-    openai_api_key: str = ""
+    # MCP auth token (optional — used for Streamable HTTP transport)
+    mcp_auth_token: str = ""
 
     # Circuit breaker
     max_graph_steps: int = 6
 
-    # Observability
-    langfuse_public_key: str = ""
-    langfuse_secret_key: str = ""
-    langfuse_host: str = "https://cloud.langfuse.com"
+    # Deduplication fingerprint TTL in seconds (30 minutes)
+    dedup_ttl_seconds: int = 1800
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

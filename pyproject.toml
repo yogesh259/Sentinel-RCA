@@ -1,6 +1,6 @@
 [project]
 name = "sentinel-rca"
-version = "0.1.0"
+version = "0.5.0"
 description = "Self-hosted, event-driven Error Root-Cause Analysis engine with MCP, LangGraph, and deterministic guardrails."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -17,12 +17,9 @@ dependencies = [
     "mcp>=1.2.0",
     "httpx>=0.27.0",
     "streamlit>=1.40.0",
-    "langchain-google-genai>=4.5.1",
-    "langchain-ollama>=1.1.0",
     "langgraph-checkpoint-postgres>=3.2.1",
-    "langchain-openai>=1.8.4",
-    "prometheus-client>=0.26.0",
-    "langfuse>=5.2.0",
+    "litellm>=1.40.0",
+    "detect-secrets>=1.5.0",
 ]
 
 [dependency-groups]

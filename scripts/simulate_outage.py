@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Simulate a Sentry NullPointerException outage storm.
+"""Simulate an incident outage storm.
 
-Fires 5 identical webhook payloads at POST /v1/webhooks/sentry.
+Fires 5 identical webhook payloads at POST /v1/incidents/ingest.
 Expected behaviour:
   • Request 1 → 202 Accepted  (status: "queued")
   • Requests 2-5 → 200 OK     (status: "deduplicated", $0 LLM cost)
@@ -19,7 +19,7 @@ import httpx
 
 BASE_URL = "http://localhost:8000"
 WEBHOOK_SECRET = "change-me-to-a-real-secret"
-ENDPOINT = f"{BASE_URL}/v1/webhooks/sentry"
+ENDPOINT = f"{BASE_URL}/v1/incidents/ingest"
 
 # Realistic Sentry webhook payload — NullPointerException from OrderController
 SENTRY_PAYLOAD = {

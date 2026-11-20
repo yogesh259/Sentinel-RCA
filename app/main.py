@@ -1,9 +1,12 @@
 """Sentinel-RCA — FastAPI application entry-point.
 
-Phase 1: Webhook gateway with HMAC verification & Redis storm suppression.
-Phase 2: Redaction middleware & isolated MCP tools.
-Phase 3: LangGraph stateful coordinator, BackgroundTask worker & RBAC approval gate.
-Phase 4: Dual observability (Prometheus /metrics + Postgres execution traces).
+API Endpoints:
+  1. POST /v1/incidents/ingest — HMAC-SHA256 authenticated webhook gateway with
+     Redis storm suppression, rate limiting, and 202 Accepted async dispatch.
+  2. GET /v1/approvals — List paused LangGraph threads awaiting HITL review.
+  3. POST /v1/approvals/{thread_id}/decision — Enforce RBAC and resume thread.
+  4. GET /v1/traces — Structured execution audit logs for Ops console.
+  5. GET /health — Deep health check pinging Neon Postgres and Upstash Redis.
 """
 
 from __future__ import annotations
@@ -14,19 +17,15 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response, status
 from langgraph.types import Command
 
+from app.core.config import settings
 from app.core.observability import (
     ExecutionTrace,
     ensure_traces_table,
     get_latest_execution_traces,
-    get_prometheus_metrics,
     record_execution_trace,
-    track_llm_cost_metric,
-    track_llm_tokens_metric,
-    track_redaction_metric,
-    track_webhook_metric,
     update_execution_trace_verdict,
 )
 from app.core.redaction import redact_dict
@@ -34,7 +33,7 @@ from app.core.schemas import (
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
     ApprovalItem,
-    WebhookResponse,
+    IngestResponse,
 )
 from app.graph.authorisation import check_rbac
 from app.graph.workflow import (
@@ -44,11 +43,13 @@ from app.graph.workflow import (
     remove_pending_approval,
 )
 from app.mcp_servers.tracker_mcp import ensure_issues_table
-from app.services.postgres import close_pool, ensure_tables, insert_incident
+from app.services.postgres import close_pool, ensure_tables, get_pool, insert_incident
 from app.services.redis_dedup import (
     check_and_set_dedup,
+    check_rate_limit,
     close_redis,
     compute_fingerprint,
+    get_redis,
 )
 from app.services.webhook_auth import verify_signature
 
@@ -64,17 +65,19 @@ async def run_rca_workflow(
     incident_id: int | None,
     fingerprint: str,
     payload: dict,
+    mode: str = "SIMULATION",
 ) -> None:
     """Execute the LangGraph RCA workflow in the background and record telemetry."""
     logger.info(
-        "Executing RCA workflow in background: thread_id=%s incident_id=%s",
+        "Executing RCA workflow in background: thread_id=%s incident_id=%s mode=%s",
         thread_id,
         incident_id,
+        mode,
     )
     t0 = time.perf_counter()
     graph = get_graph()
     config = {"configurable": {"thread_id": thread_id}}
-    sanitized_payload, p_types = redact_dict(payload)
+    sanitized_payload, _p_types = redact_dict(payload)
     initial_state = {
         "thread_id": thread_id,
         "incident_id": incident_id,
@@ -94,18 +97,6 @@ async def run_rca_workflow(
         cost_info = final_state.get("cost", {})
         tokens_used = cost_info.get("tokens_used", 0)
         cost_usd = cost_info.get("cost_usd", 0.0)
-
-        if tokens_used > 0:
-            track_llm_tokens_metric(
-                tier="deep" if tokens_used > 500 else "triage",
-                tokens=tokens_used,
-            )
-        if cost_usd > 0.0:
-            track_llm_cost_metric(cost_usd)
-
-        all_redactions = set(final_state.get("redaction_types", [])) | set(p_types)
-        for r_type in all_redactions:
-            track_redaction_metric(r_type)
 
         nodes_visited = [
             "parse_trace",
@@ -152,6 +143,7 @@ async def run_rca_workflow(
             latency_ms=latency_ms,
             token_cost=cost_usd,
             tokens_used=tokens_used,
+            mode=mode,
             final_verdict=verdict,
         )
     except Exception as exc:
@@ -180,20 +172,41 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="Sentinel-RCA",
-    version="0.4.0",
+    version="0.5.0",
     description="Self-hosted Error RCA engine with MCP, LangGraph, and deterministic RBAC",
     lifespan=lifespan,
 )
 
 
-# ── Helpers ────────────────────────────────────────────────────────
+# ── Payload Adapter Helper ─────────────────────────────────────────
 
 
 def _extract_exception_info(payload: dict) -> tuple[str, str, int, str]:
-    """Pull (exception_type, file_name, line_number, title) from a Sentry payload."""
+    """Pull (exception_type, file_name, line_number, title) from Sentry or generic payload."""
     exception_type = "UnknownException"
     file_name = "unknown"
     line_number = 0
+
+    # 1. Generic payload format: {service, error, stack_trace}
+    if "stack_trace" in payload or "service" in payload or "error" in payload:
+        service = payload.get("service", "service")
+        error = payload.get("error", "Error")
+        raw_trace = payload.get("stack_trace", "")
+
+        if raw_trace:
+            from app.mcp_servers.trace_mcp import parse_stack_trace
+
+            parsed = parse_stack_trace(raw_trace)
+            exception_type = parsed.exception_type or error
+            file_name = parsed.target_file or "unknown"
+            line_number = parsed.line_number
+        else:
+            exception_type = error
+
+        title = f"{service}: {error}" if service else error
+        return exception_type, file_name, line_number, title
+
+    # 2. Sentry webhook format
     raw_data = payload.get("data", {})
     title = raw_data.get("title", raw_data.get("event", {}).get("title", ""))
 
@@ -217,33 +230,28 @@ def _extract_exception_info(payload: dict) -> tuple[str, str, int, str]:
     return exception_type, file_name, line_number, title
 
 
-# ── Webhook endpoint ──────────────────────────────────────────────
+# ── Ingestion Endpoint ─────────────────────────────────────────────
 
 
-@app.post("/v1/webhooks/sentry", response_model=WebhookResponse)
-async def sentry_webhook(
+@app.post("/v1/incidents/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
+@app.post("/v1/webhooks/sentry", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_incident(
     request: Request,
     background_tasks: BackgroundTasks,
+    response: Response,
     x_webhook_signature: str | None = Header(None),
-) -> WebhookResponse:
-    """Receive a Sentry webhook, verify HMAC, deduplicate, and enqueue.
-
-    **1-Second SLA contract**: this endpoint MUST return immediately.
-    """
+) -> IngestResponse:
+    """Ingest incident, verify HMAC, deduplicate via Redis, and enqueue workflow."""
     body = await request.body()
 
     # Step 1: HMAC-SHA256 verification
     if not verify_signature(body, x_webhook_signature):
-        track_webhook_metric(status="rejected")
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     raw_payload: dict = json.loads(body)
-    redacted_payload, applied_redactions = redact_dict(raw_payload)
+    redacted_payload, _applied_redactions = redact_dict(raw_payload)
 
-    for r_type in applied_redactions:
-        track_redaction_metric(r_type)
-
-    # Step 2: Extract exception metadata
+    # Step 2: Extract exception metadata (normalizes Sentry + generic payloads)
     exception_type, file_name, line_number, title = _extract_exception_info(redacted_payload)
 
     # Step 3: Deterministic fingerprint
@@ -256,15 +264,25 @@ async def sentry_webhook(
         logger.info(
             "Deduplicated event (fingerprint=%s, dup_count=%d)", fingerprint[:12], dup_count
         )
-        track_webhook_metric(status="deduplicated")
-        return WebhookResponse(
+        response.status_code = status.HTTP_200_OK
+        return IngestResponse(
             status="deduplicated",
             fingerprint=fingerprint,
             duplicate_count=dup_count,
             llm_cost="$0",
         )
 
-    # Step 5: Persist to Postgres
+    # Step 5: Redis rate limit check -> determines Live Groq vs. Simulation mode
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    try:
+        is_rate_allowed = await check_rate_limit(client_ip)
+    except Exception as exc:
+        logger.warning("Rate limit check failed (%s); defaulting to allowed", exc)
+        is_rate_allowed = True
+
+    mode = "LIVE_GROQ" if (is_rate_allowed and settings.groq_api_key) else "SIMULATION"
+
+    # Step 6: Persist to Postgres
     incident_id: int | None = None
     try:
         incident_id = await insert_incident(
@@ -280,22 +298,24 @@ async def sentry_webhook(
         logger.warning("Postgres insert failed — incident queued in-memory only.")
 
     thread_id = f"thread_{fingerprint[:16]}"
-    track_webhook_metric(status="queued")
 
-    # Step 6: Dispatch LangGraph workflow via BackgroundTasks
+    # Step 7: Dispatch LangGraph workflow via BackgroundTasks
     background_tasks.add_task(
         run_rca_workflow,
         thread_id=thread_id,
         incident_id=incident_id,
         fingerprint=fingerprint,
         payload=redacted_payload,
+        mode=mode,
     )
 
-    return WebhookResponse(
+    response.status_code = status.HTTP_202_ACCEPTED
+    return IngestResponse(
         status="queued",
         fingerprint=fingerprint,
         incident_id=str(incident_id) if incident_id else None,
         thread_id=thread_id,
+        mode=mode,
         llm_cost="$0",
     )
 
@@ -406,14 +426,7 @@ async def submit_approval_decision(
     )
 
 
-# ── Dual Observability Endpoints ───────────────────────────────────
-
-
-@app.get("/metrics")
-async def metrics() -> Response:
-    """Prometheus metrics endpoint."""
-    content, content_type = get_prometheus_metrics()
-    return Response(content=content, media_type=content_type)
+# ── Observability & Health Endpoints ───────────────────────────────
 
 
 @app.get("/v1/traces", response_model=list[ExecutionTrace])
@@ -422,9 +435,35 @@ async def list_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
     return await get_latest_execution_traces(limit=limit)
 
 
-# ── Health ─────────────────────────────────────────────────────────
+@app.get("/health")
+async def health_check() -> dict:
+    """Deep health check verifying Neon Postgres and Upstash Redis connectivity."""
+    pg_ok = False
+    redis_ok = False
 
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            val = await conn.fetchval("SELECT 1;")
+            pg_ok = val == 1
+    except Exception as exc:
+        logger.warning("Health check Postgres ping failed: %s", exc)
 
-@app.get("/healthz")
-async def healthz() -> dict:
-    return {"status": "ok"}
+    try:
+        r = await get_redis()
+        pong = await r.ping()
+        redis_ok = bool(pong)
+    except Exception as exc:
+        logger.warning("Health check Redis ping failed: %s", exc)
+
+    if pg_ok and redis_ok:
+        return {"status": "ok", "postgres": "connected", "redis": "connected"}
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "status": "degraded",
+            "postgres": "connected" if pg_ok else "unavailable",
+            "redis": "connected" if redis_ok else "unavailable",
+        },
+    )

@@ -39,7 +39,7 @@ def post_webhook(payload: dict) -> httpx.Response:
     body = json.dumps(payload).encode()
     sig = compute_signature(body)
     return httpx.post(
-        f"{API_BASE_URL}/v1/webhooks/sentry",
+        f"{API_BASE_URL}/v1/incidents/ingest",
         content=body,
         headers={
             "Content-Type": "application/json",

@@ -1,7 +1,7 @@
 """Phase 1 tests — webhook HMAC, fingerprinting, and Redis deduplication.
 
 All tests are deterministic and do NOT require Postgres or a running server.
-Redis is mocked with fakeredis.
+Redis is mocked with FakeRedis.
 """
 
 from __future__ import annotations
@@ -45,6 +45,15 @@ SAMPLE_PAYLOAD = {
             },
         }
     },
+}
+
+GENERIC_PAYLOAD = {
+    "service": "order-service",
+    "error": "NullPointerException: discountCode.length()",
+    "stack_trace": (
+        "NullPointerException: Cannot invoke String.length() because discountCode is null\n"
+        "\tat com.victim.controller.OrderController.createOrder(OrderController.java:34)"
+    ),
 }
 
 
@@ -111,7 +120,7 @@ class TestWebhookAuth:
 
 
 class FakeRedis:
-    """Minimal in-memory Redis mock supporting SETNX-style set + incr."""
+    """Minimal in-memory Redis mock supporting SETNX, INCR, EXPIRE, and PING."""
 
     def __init__(self):
         self._store: dict[str, str] = {}
@@ -128,6 +137,12 @@ class FakeRedis:
         val = int(self._store.get(key, "0")) + 1
         self._store[key] = str(val)
         return val
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        return True
+
+    async def ping(self) -> bool:
+        return True
 
     async def aclose(self):
         pass
@@ -168,73 +183,91 @@ def client():
 
 
 class TestWebhookEndpoint:
-    """Integration tests for POST /v1/webhooks/sentry."""
+    """Integration tests for POST /v1/incidents/ingest."""
 
     def test_rejects_missing_signature(self, client):
         body = json.dumps(SAMPLE_PAYLOAD).encode()
-        resp = client.post("/v1/webhooks/sentry", content=body)
+        resp = client.post("/v1/incidents/ingest", content=body)
         assert resp.status_code == 401
 
     def test_rejects_invalid_signature(self, client):
         body = json.dumps(SAMPLE_PAYLOAD).encode()
         resp = client.post(
-            "/v1/webhooks/sentry",
+            "/v1/incidents/ingest",
             content=body,
             headers={"X-Webhook-Signature": "bad-sig"},
         )
         assert resp.status_code == 401
 
-    def test_first_event_queued(self, client):
+    def test_first_event_queued_202(self, client):
         body = json.dumps(SAMPLE_PAYLOAD).encode()
         sig = _sign(body)
         resp = client.post(
-            "/v1/webhooks/sentry",
+            "/v1/incidents/ingest",
             content=body,
             headers={"X-Webhook-Signature": sig},
         )
-        assert resp.status_code == 200  # FastAPI returns 200 for response_model
+        assert resp.status_code == 202
         data = resp.json()
         assert data["status"] == "queued"
         assert data["fingerprint"]
         assert data["llm_cost"] == "$0"
 
-    def test_duplicate_event_deduplicated(self, client):
+    def test_generic_payload_queued(self, client):
+        body = json.dumps(GENERIC_PAYLOAD).encode()
+        sig = _sign(body)
+        resp = client.post(
+            "/v1/incidents/ingest",
+            content=body,
+            headers={"X-Webhook-Signature": sig},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "queued"
+        assert data["fingerprint"]
+
+    def test_duplicate_event_deduplicated_200(self, client):
         body = json.dumps(SAMPLE_PAYLOAD).encode()
         sig = _sign(body)
 
-        # First call — queued
+        # First call — queued (202)
         resp1 = client.post(
-            "/v1/webhooks/sentry",
+            "/v1/incidents/ingest",
             content=body,
             headers={"X-Webhook-Signature": sig},
         )
+        assert resp1.status_code == 202
         assert resp1.json()["status"] == "queued"
 
-        # Second call — deduplicated
+        # Second call — deduplicated (200)
         resp2 = client.post(
-            "/v1/webhooks/sentry",
+            "/v1/incidents/ingest",
             content=body,
             headers={"X-Webhook-Signature": sig},
         )
+        assert resp2.status_code == 200
         data2 = resp2.json()
         assert data2["status"] == "deduplicated"
         assert data2["llm_cost"] == "$0"
         assert data2["duplicate_count"] >= 1
 
     def test_five_storm_events(self, client):
-        """Simulates the 5-event storm — only 1 should be queued."""
+        """Simulates the 5-event storm — 1 queued (202), 4 deduplicated (200)."""
         body = json.dumps(SAMPLE_PAYLOAD).encode()
         sig = _sign(body)
 
         statuses = []
+        codes = []
         for _ in range(5):
             resp = client.post(
-                "/v1/webhooks/sentry",
+                "/v1/incidents/ingest",
                 content=body,
                 headers={"X-Webhook-Signature": sig},
             )
+            codes.append(resp.status_code)
             statuses.append(resp.json()["status"])
 
         assert statuses.count("queued") == 1
         assert statuses.count("deduplicated") == 4
-        assert statuses[0] == "queued"
+        assert codes[0] == 202
+        assert all(c == 200 for c in codes[1:])

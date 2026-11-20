@@ -1,17 +1,9 @@
-"""Dual observability layer for Sentinel-RCA.
+"""Postgres-backed observability layer for Sentinel-RCA.
 
-1. Prometheus Metrics:
-   - sentinel_webhooks_total (labeled by status: queued, deduplicated, rejected)
-   - sentinel_llm_tokens_total (labeled by tier: triage, deep)
-   - sentinel_llm_cost_usd_total
-   - sentinel_redactions_total (labeled by redaction_type)
-
-2. Structured Execution Trace:
-   - Persists per-incident run telemetry (redacted payload, nodes visited,
-     MCP tool calls, latency_ms, token cost, final verdict) in Postgres
-     (with in-memory fallback for local dev / tests).
-
-3. Graceful Langfuse wrapper (no-op when LANGFUSE_PUBLIC_KEY is not configured).
+Structured Execution Trace:
+  Persists per-incident run telemetry (redacted payload, nodes visited,
+  MCP tool calls, latency_ms, token cost, mode, final verdict) in Postgres
+  with an in-memory deque fallback for local dev / tests.
 """
 
 from __future__ import annotations
@@ -21,59 +13,9 @@ import logging
 from collections import deque
 from datetime import UTC, datetime
 
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 from pydantic import BaseModel, Field
 
-from app.core.config import settings
-
 logger = logging.getLogger("sentinel-rca.observability")
-
-
-# ── Prometheus Counters ───────────────────────────────────────────
-
-sentinel_webhooks_total = Counter(
-    "sentinel_webhooks_total",
-    "Total inbound Sentry webhooks received",
-    ["status"],  # "queued", "deduplicated", "rejected"
-)
-
-sentinel_llm_tokens_total = Counter(
-    "sentinel_llm_tokens_total",
-    "Total LLM tokens consumed",
-    ["tier"],  # "triage", "deep"
-)
-
-sentinel_llm_cost_usd_total = Counter(
-    "sentinel_llm_cost_usd_total",
-    "Total cumulative LLM spend in USD",
-)
-
-sentinel_redactions_total = Counter(
-    "sentinel_redactions_total",
-    "Total sensitive tokens / patterns redacted",
-    ["redaction_type"],  # e.g., "[REDACTED_JWT]", "[REDACTED_EMAIL]"
-)
-
-
-def track_webhook_metric(status: str) -> None:
-    sentinel_webhooks_total.labels(status=status).inc()
-
-
-def track_llm_tokens_metric(tier: str, tokens: int) -> None:
-    sentinel_llm_tokens_total.labels(tier=tier).inc(tokens)
-
-
-def track_llm_cost_metric(cost_usd: float) -> None:
-    sentinel_llm_cost_usd_total.inc(cost_usd)
-
-
-def track_redaction_metric(redaction_type: str, count: int = 1) -> None:
-    sentinel_redactions_total.labels(redaction_type=redaction_type).inc(count)
-
-
-def get_prometheus_metrics() -> tuple[bytes, str]:
-    """Generate latest Prometheus metrics text and appropriate content-type."""
-    return generate_latest(), CONTENT_TYPE_LATEST
 
 
 # ── Structured Execution Trace Schema ──────────────────────────────
@@ -90,6 +32,7 @@ class ExecutionTrace(BaseModel):
     latency_ms: float = 0.0
     token_cost: float = 0.0
     tokens_used: int = 0
+    mode: str = ""  # "LIVE_GROQ" | "SIMULATION"
     final_verdict: str = ""
     created_at: datetime | None = None
 
@@ -121,6 +64,7 @@ async def ensure_traces_table() -> None:
                     latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0.0,
                     token_cost DOUBLE PRECISION NOT NULL DEFAULT 0.0,
                     tokens_used INT NOT NULL DEFAULT 0,
+                    mode TEXT NOT NULL DEFAULT '',
                     final_verdict TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
@@ -144,6 +88,7 @@ async def record_execution_trace(
     token_cost: float,
     tokens_used: int,
     final_verdict: str,
+    mode: str = "",
 ) -> ExecutionTrace:
     """Persist structured execution trace to Postgres and in-memory buffer."""
     now = datetime.now(UTC)
@@ -158,6 +103,7 @@ async def record_execution_trace(
         "latency_ms": round(latency_ms, 2),
         "token_cost": round(token_cost, 6),
         "tokens_used": tokens_used,
+        "mode": mode,
         "final_verdict": final_verdict,
         "created_at": now,
     }
@@ -174,9 +120,9 @@ async def record_execution_trace(
                 INSERT INTO execution_traces (
                     thread_id, incident_id, fingerprint, redacted_payload,
                     nodes_visited, mcp_tool_calls, latency_ms, token_cost,
-                    tokens_used, final_verdict, created_at
+                    tokens_used, mode, final_verdict, created_at
                 )
-                VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)
+                VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12)
                 RETURNING id;
                 """,
                 thread_id,
@@ -188,6 +134,7 @@ async def record_execution_trace(
                 latency_ms,
                 token_cost,
                 tokens_used,
+                mode,
                 final_verdict,
                 now,
             )
@@ -260,7 +207,7 @@ async def get_latest_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
                 """
                 SELECT id, thread_id, incident_id, fingerprint, redacted_payload,
                        nodes_visited, mcp_tool_calls, latency_ms, token_cost,
-                       tokens_used, final_verdict, created_at
+                       tokens_used, mode, final_verdict, created_at
                 FROM execution_traces
                 ORDER BY created_at DESC
                 LIMIT $1;
@@ -286,6 +233,7 @@ async def get_latest_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
                         latency_ms=r["latency_ms"],
                         token_cost=r["token_cost"],
                         tokens_used=r["tokens_used"],
+                        mode=r.get("mode", ""),
                         final_verdict=r["final_verdict"],
                         created_at=r["created_at"],
                     )
@@ -297,38 +245,3 @@ async def get_latest_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
     # In-memory fallback
     traces = list(_IN_MEMORY_TRACES)[:limit]
     return [ExecutionTrace(**t) for t in traces]
-
-
-# ── Optional Langfuse Integration ──────────────────────────────────
-
-
-class NoOpLangfuse:
-    """Safe no-op client used when Langfuse keys are absent."""
-
-    def trace(self, *args, **kwargs):
-        return self
-
-    def span(self, *args, **kwargs):
-        return self
-
-    def event(self, *args, **kwargs):
-        return self
-
-    def flush(self):
-        pass
-
-
-def get_langfuse():
-    """Return configured Langfuse client or NoOpLangfuse fallback."""
-    if settings.langfuse_public_key and settings.langfuse_secret_key:
-        try:
-            from langfuse import Langfuse
-
-            return Langfuse(
-                public_key=settings.langfuse_public_key,
-                secret_key=settings.langfuse_secret_key,
-                host=settings.langfuse_host,
-            )
-        except Exception as exc:
-            logger.warning("Could not initialize Langfuse: %s", exc)
-    return NoOpLangfuse()

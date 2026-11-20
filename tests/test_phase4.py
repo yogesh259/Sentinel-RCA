@@ -1,46 +1,21 @@
-"""Phase 4 tests — Observability (Prometheus + Traces) & Benchmark Evaluation."""
+"""Phase 4 tests — Observability (Postgres Traces) & Benchmark Evaluation."""
 
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.observability import (
     get_latest_execution_traces,
-    get_prometheus_metrics,
     record_execution_trace,
-    track_llm_cost_metric,
-    track_llm_tokens_metric,
-    track_redaction_metric,
-    track_webhook_metric,
 )
 from evals.test_evals import REPORT_PATH, load_golden_scenarios
 
 
-class TestObservabilityMetrics:
-    def test_metrics_counters_increment(self):
-        track_webhook_metric("queued")
-        track_webhook_metric("deduplicated")
-        track_llm_tokens_metric("triage", 120)
-        track_llm_tokens_metric("deep", 450)
-        track_llm_cost_metric(0.0025)
-        track_redaction_metric("[REDACTED_JWT]", count=2)
-
-        content, content_type = get_prometheus_metrics()
-        text = content.decode("utf-8")
-
-        assert "sentinel_webhooks_total" in text
-        assert 'status="queued"' in text
-        assert 'status="deduplicated"' in text
-        assert "sentinel_llm_tokens_total" in text
-        assert 'tier="triage"' in text
-        assert 'tier="deep"' in text
-        assert "sentinel_llm_cost_usd_total" in text
-        assert "sentinel_redactions_total" in text
-        assert "[REDACTED_JWT]" in text
-
+class TestObservabilityTraces:
     @pytest.mark.asyncio
     async def test_execution_trace_persistence_and_retrieval(self):
         trace = await record_execution_trace(
@@ -53,10 +28,12 @@ class TestObservabilityMetrics:
             latency_ms=12.5,
             token_cost=0.0005,
             tokens_used=150,
+            mode="SIMULATION",
             final_verdict="completed",
         )
         assert trace.thread_id == "test-trace-thread"
         assert trace.latency_ms == 12.5
+        assert trace.mode == "SIMULATION"
 
         traces = await get_latest_execution_traces(limit=10)
         assert any(t.thread_id == "test-trace-thread" for t in traces)
@@ -69,17 +46,44 @@ class TestObservabilityEndpoints:
 
         yield TestClient(app, raise_server_exceptions=False)
 
-    def test_metrics_endpoint_returns_prometheus_data(self, client):
-        resp = client.get("/metrics")
-        assert resp.status_code == 200
-        assert "text/plain" in resp.headers["content-type"]
-        assert "sentinel_webhooks_total" in resp.text
-
     def test_traces_endpoint_returns_json_list(self, client):
         resp = client.get("/v1/traces")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
+
+    def test_health_endpoint_healthy(self, client):
+        mock_conn = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=1)
+        mock_pool = MagicMock()
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.acquire.return_value = cm
+
+        fake_redis = AsyncMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+
+        with (
+            patch("app.main.get_pool", new_callable=AsyncMock, return_value=mock_pool),
+            patch("app.main.get_redis", new_callable=AsyncMock, return_value=fake_redis),
+        ):
+            resp = client.get("/health")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "ok"
+            assert data["postgres"] == "connected"
+            assert data["redis"] == "connected"
+
+    def test_health_endpoint_degraded(self, client):
+        with (
+            patch("app.main.get_pool", side_effect=RuntimeError("PG down")),
+            patch("app.main.get_redis", side_effect=RuntimeError("Redis down")),
+        ):
+            resp = client.get("/health")
+            assert resp.status_code == 503
+            data = resp.json()
+            assert data["detail"]["status"] == "degraded"
 
 
 class TestBenchmarkReportIntegrity:

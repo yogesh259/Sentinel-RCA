@@ -38,28 +38,25 @@ from app.services.llm_router import CostTracker, get_model_key
 class TestLLMRouterAndCost:
     def test_cost_tracker_accumulation(self):
         tracker = CostTracker()
-        tracker.record("ollama", input_tokens=500, output_tokens=100)
+        tracker.record("simulation", input_tokens=500, output_tokens=100)
         assert tracker.tokens_used == 600
-        assert tracker.cost_usd == 0.0  # ollama is free
+        assert tracker.cost_usd == 0.0  # simulation is free
 
-        tracker.record("gemini-2.0-flash", input_tokens=1_000_000, output_tokens=500_000)
+        tracker.record("groq/llama-3.3-70b-versatile", input_tokens=1_000_000, output_tokens=500_000)
         assert tracker.tokens_used == 1_500_600
-        # 1M * 0.10 + 0.5M * 0.40 = 0.10 + 0.20 = 0.30
-        assert abs(tracker.cost_usd - 0.30) < 1e-4
-        assert "$0.3000" in tracker.summary
+        # 1M * 0.59 + 0.5M * 0.79 = 0.59 + 0.395 = 0.985
+        assert abs(tracker.cost_usd - 0.985) < 1e-4
+        assert "$0.9850" in tracker.summary
 
     def test_router_model_key(self, monkeypatch):
         from app.core.config import settings
 
-        monkeypatch.setattr(settings, "use_local_ollama", True)
-        assert get_model_key("triage") == "ollama"
+        monkeypatch.setattr(settings, "groq_api_key", "")
+        assert get_model_key("triage") == "simulation"
 
-        monkeypatch.setattr(settings, "use_local_ollama", False)
-        monkeypatch.setattr(settings, "hosted_triage_model", "gemini-2.0-flash")
-        assert get_model_key("triage") == "gemini-2.0-flash"
-
-        monkeypatch.setattr(settings, "deep_rca_model", "gemini-2.0-flash")
-        assert get_model_key("deep_rca") == "gemini-2.0-flash"
+        monkeypatch.setattr(settings, "groq_api_key", "gsk_test")
+        assert get_model_key("triage") == "groq/llama-3.1-8b-instant"
+        assert get_model_key("deep_rca") == "groq/llama-3.3-70b-versatile"
 
 
 # ═══════════════════════════════════════════════════════════════════
