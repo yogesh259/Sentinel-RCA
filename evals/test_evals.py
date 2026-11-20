@@ -264,7 +264,7 @@ class TestGoldenBenchmarkSuite:
 | Execution Strategy | Estimated Run Cost | Effective Savings |
 | :--- | :--- | :--- |
 | **Frontier-Only Baseline** (All 20 alerts routed to frontier LLM) | `${frontier_only_cost:.3f}` | Baseline (0%) |
-| **Sentinel-RCA Hybrid** (Storm suppression + Pure Redaction + Local Triage) | `${hybrid_cost:.3f}` | **{cost_savings_pct}% Savings** |
+| **Sentinel-RCA Hybrid** (Storm suppression + Pure Redaction + Groq 8B Triage) | `${hybrid_cost:.3f}` | **{cost_savings_pct}% Savings** |
 
 ## Category Details
 
