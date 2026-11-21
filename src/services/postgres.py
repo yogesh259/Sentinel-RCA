@@ -1,18 +1,17 @@
 """Thin async Postgres layer for incident persistence (asyncpg)."""
 
-from __future__ import annotations
 
 import asyncpg
 
-from src.core.config import settings
+from src.core.config import config
 
 _pool: asyncpg.Pool | None = None
 
 def _get_clean_dsn() -> str:
     raw = (
-        settings.database_url.get_secret_value()
-        if hasattr(settings.database_url, "get_secret_value")
-        else str(settings.database_url)
+        config.database_url.get_secret_value()
+        if hasattr(config.database_url, "get_secret_value")
+        else str(config.database_url)
     )
     return raw.replace("postgresql+asyncpg://", "postgresql://")
 

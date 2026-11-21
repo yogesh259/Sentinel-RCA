@@ -1,6 +1,5 @@
 """Pydantic v2 schemas for Human-in-the-Loop approvals and decisions."""
 
-from __future__ import annotations
 
 from typing import Any, Literal
 

@@ -4,7 +4,6 @@ Decides whether a ProposedResolution can auto-execute, needs HITL approval,
 or must be blocked/escalated. Also enforces RBAC on approval decisions.
 """
 
-from __future__ import annotations
 
 import re
 from enum import StrEnum
@@ -12,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from src.core.config import settings
+MAX_GRAPH_STEPS: int = 6
 
 # ── ProposedResolution schema ─────────────────────────────────────
 
@@ -82,14 +81,12 @@ def check_authorisation(
       4. Auto-approve deduplicate and create_issue.
       5. Block and escalate otherwise.
     """
-    max_steps = settings.max_graph_steps
-
     # Rule 1: Circuit breaker
-    if step_count >= max_steps:
+    if step_count >= MAX_GRAPH_STEPS:
         return AuthResult(
             decision=AuthDecision.BLOCKED,
             reason=(
-                f"Circuit breaker triggered: step_count ({step_count}) >= {max_steps}. Escalating."
+                f"Circuit breaker triggered: step_count ({step_count}) >= {MAX_GRAPH_STEPS}. Escalating."
             ),
             proposal=proposal.model_copy(update={"action": "escalate"}),
         )

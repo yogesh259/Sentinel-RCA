@@ -14,7 +14,6 @@ Execution modes controlled via EVAL_MODE ("mock", "live", "off"):
 Outputs full benchmark summary JSON to evals/latest_report.json.
 """
 
-from __future__ import annotations
 
 import json
 import os
@@ -24,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from src.core.config import settings
+from src.core.config import config
 from src.core.redaction import redact_payload
 from src.graph.authorisation import (
     AuthDecision,
@@ -64,9 +63,9 @@ class TestGoldenBenchmarkSuite:
 
         if is_live:
             groq_api_key = (
-                settings.groq_api_key.get_secret_value()
-                if hasattr(settings.groq_api_key, "get_secret_value")
-                else str(settings.groq_api_key)
+                config.groq_api_key.get_secret_value()
+                if hasattr(config.groq_api_key, "get_secret_value")
+                else str(config.groq_api_key)
             )
             if not groq_api_key:
                 pytest.fail("GROQ_API_KEY is missing! Live mode requires a valid Groq API key.")

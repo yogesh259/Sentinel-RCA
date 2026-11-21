@@ -9,7 +9,6 @@ API Endpoints:
   5. GET /health — Deep health check pinging Neon Postgres and Upstash Redis.
 """
 
-from __future__ import annotations
 
 import json
 import logging
@@ -20,14 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response, status
 from langgraph.types import Command
 
-from src.core.config import settings
-from src.core.observability import (
-    ExecutionTrace,
-    ensure_traces_table,
-    get_latest_execution_traces,
-    record_execution_trace,
-    update_execution_trace_verdict,
-)
+from src.core.config import config
 from src.core.redaction import redact_dict
 from src.graph.authorisation import check_rbac
 from src.graph.workflow import (
@@ -43,6 +35,14 @@ from src.schemas.approval import (
     ApprovalItem,
 )
 from src.schemas.incident import IngestResponse
+from src.schemas.trace import ExecutionTrace
+from src.services.observability import (
+    ensure_traces_table,
+    get_execution_trace_by_thread_id,
+    get_latest_execution_traces,
+    record_execution_trace,
+    update_execution_trace_verdict,
+)
 from src.services.postgres import close_pool, ensure_tables, get_pool, insert_incident
 from src.services.redis_dedup import (
     check_and_set_dedup,
@@ -287,7 +287,7 @@ async def ingest_incident(
             detail="Rate limit exceeded. Too many incident ingestion requests; please retry later.",
         )
 
-    mode = settings.primary_llm_model
+    mode = config.primary_llm_model
 
     # Step 6: Persist to Postgres
     incident_id: int | None = None
@@ -399,8 +399,7 @@ async def submit_approval_decision(
                 {"tool": f"tracker_mcp.{res_action}", "result": resumed_state["result"]}
             )
 
-        traces = await get_latest_execution_traces(limit=50)
-        existing_trace = next((t for t in traces if t.thread_id == thread_id), None)
+        existing_trace = await get_execution_trace_by_thread_id(thread_id)
         nodes = (
             list(existing_trace.nodes_visited)
             if existing_trace

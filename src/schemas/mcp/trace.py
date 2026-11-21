@@ -1,6 +1,5 @@
 """Pydantic v2 schemas for trace_mcp server (Phase 2)."""
 
-from __future__ import annotations
 
 from pydantic import BaseModel, Field
 

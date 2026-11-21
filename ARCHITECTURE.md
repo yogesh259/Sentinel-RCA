@@ -68,7 +68,7 @@ Only these variables should exist (via Pydantic `BaseSettings`):
 - `GEMINI_API_KEY` (Fallback LLM key)
 - `PRIMARY_LLM_MODEL` (Default: `groq/llama-3.3-70b-versatile`)
 - `FALLBACK_LLM_MODEL` (Default: `gemini/gemini-2.5-flash`)
-- `GROQ_DAILY_LIMIT` (Default: `30`)
+- `LLM_DAILY_LIMIT` (Default: `30`)
 - `RATE_LIMIT_PER_HOUR` (Default: `5`)
 - `GITHUB_TOKEN` (GitHub Personal Access Token)
 - `GITHUB_REPO` (GitHub repository in `owner/repo` format)

@@ -14,7 +14,7 @@ services:
         generateValue: true
       - key: GROQ_API_KEY
         sync: false
-      - key: GROQ_DAILY_LIMIT
+      - key: LLM_DAILY_LIMIT
         value: "30"
       - key: RATE_LIMIT_PER_HOUR
         value: "5"

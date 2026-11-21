@@ -1,6 +1,5 @@
 """Pytest configuration and environment fixtures for Sentinel-RCA test suite."""
 
-from __future__ import annotations
 
 import os
 from unittest.mock import patch
@@ -20,7 +19,6 @@ os.environ.setdefault("GEMINI_API_KEY", "gemini_mock_test_key_for_testing")
 os.environ.setdefault("GITHUB_TOKEN", "mock_gh_token_for_testing")
 os.environ.setdefault("GITHUB_REPO", "octocat/victim-service")
 
-from src.core.config import get_settings  # noqa: E402
 from tests.mocks import create_mock_github_client, mock_llm_complete  # noqa: E402
 
 
@@ -32,14 +30,6 @@ def pytest_addoption(parser):
         default=False,
         help="Run evals using live LLM APIs instead of deterministic mock mode",
     )
-
-
-@pytest.fixture(autouse=True)
-def reset_settings_cache():
-    """Ensure clean settings cache before and after each test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

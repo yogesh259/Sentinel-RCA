@@ -1,6 +1,5 @@
 """Domain DTOs and Pydantic v2 schemas for Sentinel-RCA."""
 
-from __future__ import annotations
 
 from src.schemas.approval import (
     ApprovalDecisionRequest,
@@ -38,6 +37,7 @@ from src.schemas.sentry import (
     SentryStacktraceFrame,
     SentryWebhookPayload,
 )
+from src.schemas.trace import ExecutionTrace
 
 __all__ = [
     # Approval
@@ -72,4 +72,6 @@ __all__ = [
     "SentryStacktrace",
     "SentryStacktraceFrame",
     "SentryWebhookPayload",
+    # Trace
+    "ExecutionTrace",
 ]

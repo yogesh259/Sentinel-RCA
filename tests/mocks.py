@@ -1,6 +1,5 @@
 """Deterministic mock fixtures for zero-cost, offline testing."""
 
-from __future__ import annotations
 
 import httpx
 

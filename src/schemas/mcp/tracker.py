@@ -1,6 +1,5 @@
 """Pydantic v2 schemas for tracker_mcp server (Phase 2)."""
 
-from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal

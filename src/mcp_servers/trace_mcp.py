@@ -6,7 +6,6 @@ Exposes:
 Runs PII/secret redaction first, then extracts structured exception info.
 """
 
-from __future__ import annotations
 
 import re
 

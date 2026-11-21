@@ -6,7 +6,6 @@ Engineering control panel (NO chatbot UI) with 3 tabs:
   3. Eval & Cost Dashboard (benchmark metrics & hybrid vs frontier cost breakdown)
 """
 
-from __future__ import annotations
 
 import hashlib
 import hmac

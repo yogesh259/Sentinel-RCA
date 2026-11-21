@@ -1,13 +1,14 @@
 """Redis client, storm-suppression (deduplication), and rate-limiting helpers."""
 
-from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 
-from src.core.config import settings
+from src.core.config import config
+
+DEFAULT_STORM_DEDUP_TTL_SECONDS: int = 1800  # 30-minute alert storm suppression window
 
 # Module-level client — initialised lazily via get_redis()
 _redis_client: aioredis.Redis | None = None
@@ -18,9 +19,9 @@ async def get_redis() -> aioredis.Redis:
     global _redis_client
     if _redis_client is None:
         url = (
-            settings.redis_url.get_secret_value()
-            if hasattr(settings.redis_url, "get_secret_value")
-            else str(settings.redis_url)
+            config.redis_url.get_secret_value()
+            if hasattr(config.redis_url, "get_secret_value")
+            else str(config.redis_url)
         )
         _redis_client = aioredis.from_url(url, decode_responses=True)
     return _redis_client
@@ -47,7 +48,7 @@ async def check_and_set_dedup(
         - is_new=False → duplicate; duplicate_count is how many times it's been seen.
     """
     if ttl_seconds is None:
-        ttl_seconds = settings.dedup_ttl_seconds
+        ttl_seconds = DEFAULT_STORM_DEDUP_TTL_SECONDS
 
     r = await get_redis()
     key = f"sentinel:dedup:{fingerprint}"
@@ -79,7 +80,7 @@ async def check_rate_limit(client_ip: str) -> bool:
     ip_count = await r.incr(ip_key)
     if ip_count == 1:
         await r.expire(ip_key, 3600)
-    if ip_count > settings.rate_limit_per_hour:
+    if ip_count > config.rate_limit_per_hour:
         return False
 
     # Global daily limit
@@ -88,7 +89,7 @@ async def check_rate_limit(client_ip: str) -> bool:
     global_count = await r.incr(global_key)
     if global_count == 1:
         await r.expire(global_key, 86400)
-    if global_count > settings.groq_daily_limit:
+    if global_count > config.llm_daily_limit:
         return False
 
     return True

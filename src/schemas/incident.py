@@ -1,9 +1,8 @@
 """Pydantic v2 schemas for incident payloads, records, and ingestion responses."""
 
-from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -18,7 +17,7 @@ class IncidentEvent(BaseModel):
     stack_trace: str = Field("", description="Raw stack trace string")
 
     @model_validator(mode="after")
-    def validate_has_error_or_trace(self) -> IncidentEvent:
+    def validate_has_error_or_trace(self) -> Self:
         if not self.error.strip() and not self.stack_trace.strip():
             raise ValueError("IncidentEvent must provide either 'error' or 'stack_trace'.")
         return self

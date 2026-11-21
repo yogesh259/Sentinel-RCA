@@ -8,13 +8,12 @@ Tiers and routing:
   - Configuration: Raises LLMConfigurationError if neither GROQ_API_KEY nor GEMINI_API_KEY is configured.
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-from src.core.config import settings
+from src.core.config import config
 
 logger = logging.getLogger("sentinel-rca.llm_router")
 
@@ -92,13 +91,13 @@ def _get_key_str(secret) -> str:
 
 def _get_api_key_for_model(model: str) -> str:
     if model.startswith("gemini/") or "gemini" in model.lower():
-        return _get_key_str(settings.gemini_api_key)
-    return _get_key_str(settings.groq_api_key)
+        return _get_key_str(config.gemini_api_key)
+    return _get_key_str(config.groq_api_key)
 
 
 def get_model_key(tier: Tier) -> str:
     """Return the primary model identifier for the given tier."""
-    return TRIAGE_MODEL if tier == "triage" else settings.primary_llm_model
+    return TRIAGE_MODEL if tier == "triage" else config.primary_llm_model
 
 
 async def _execute_completion(model: str, messages: list[dict[str, str]], api_key: str) -> str:
@@ -136,8 +135,8 @@ async def llm_complete(
         LLMConfigurationError: If neither GROQ_API_KEY nor GEMINI_API_KEY is configured.
         LLMRateLimitError: If both primary and fallback fail due to rate/quota limits.
     """
-    groq_key = _get_key_str(settings.groq_api_key)
-    gemini_key = _get_key_str(settings.gemini_api_key)
+    groq_key = _get_key_str(config.groq_api_key)
+    gemini_key = _get_key_str(config.gemini_api_key)
 
     if not groq_key and not gemini_key:
         raise LLMConfigurationError(
@@ -148,7 +147,7 @@ async def llm_complete(
     primary_model = get_model_key(tier)
     primary_key = _get_api_key_for_model(primary_model)
 
-    fallback_model = settings.fallback_llm_model
+    fallback_model = config.fallback_llm_model
     fallback_key = _get_api_key_for_model(fallback_model)
 
     # 1. Attempt Primary Provider

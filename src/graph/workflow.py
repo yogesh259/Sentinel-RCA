@@ -11,7 +11,6 @@ Uses LangGraph interrupt() at authorisation_gate whenever HITL is required,
 persisting the paused state to the configured checkpointer.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import TypedDict

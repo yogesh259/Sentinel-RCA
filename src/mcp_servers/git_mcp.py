@@ -10,7 +10,6 @@ Exposes:
     get_file_contents(file_path, ref)    -> str
 """
 
-from __future__ import annotations
 
 import base64
 import logging
@@ -20,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from src.core.config import settings
+from src.core.config import config
 from src.core.redaction import redact_payload
 from src.schemas.mcp.git import BlameEntry, CommitInfo, DiffOutput
 
@@ -115,7 +114,7 @@ def resolve_victim_file(file_path: str, repo_path: Path | None = None) -> str:
 
 
 def _get_repo(repo: str | None = None) -> str:
-    target = repo or settings.github_repo
+    target = repo or config.github_repo
     if not target or not target.strip():
         return "octocat/victim-service"
     return target.strip().strip("/")
@@ -130,9 +129,9 @@ def _get_headers(token: str | None = None, accept: str = "application/vnd.github
     raw_token = token
     if raw_token is None:
         raw_token = (
-            settings.github_token.get_secret_value()
-            if hasattr(settings.github_token, "get_secret_value")
-            else str(settings.github_token)
+            config.github_token.get_secret_value()
+            if hasattr(config.github_token, "get_secret_value")
+            else str(config.github_token)
         )
     if raw_token and raw_token.strip():
         headers["Authorization"] = f"Bearer {raw_token.strip()}"

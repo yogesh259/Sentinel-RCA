@@ -1,11 +1,10 @@
 """HMAC-SHA256 webhook signature verification — pure Python, never LLM."""
 
-from __future__ import annotations
 
 import hashlib
 import hmac
 
-from src.core.config import settings
+from src.core.config import config
 
 
 def verify_signature(payload_body: bytes, signature_header: str | None) -> bool:
@@ -20,9 +19,9 @@ def verify_signature(payload_body: bytes, signature_header: str | None) -> bool:
         return False
 
     secret = (
-        settings.webhook_secret.get_secret_value()
-        if hasattr(settings.webhook_secret, "get_secret_value")
-        else str(settings.webhook_secret)
+        config.webhook_secret.get_secret_value()
+        if hasattr(config.webhook_secret, "get_secret_value")
+        else str(config.webhook_secret)
     )
 
     expected = hmac.new(

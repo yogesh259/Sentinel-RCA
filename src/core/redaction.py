@@ -5,7 +5,6 @@ emails via a lightweight regex. Returns both the sanitised text and an audit
 list of redaction types applied.
 """
 
-from __future__ import annotations
 
 import re
 from typing import Any

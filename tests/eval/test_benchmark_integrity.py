@@ -1,6 +1,5 @@
 """Benchmark report schema and SLA verification tests."""
 
-from __future__ import annotations
 
 import json
 

@@ -1,6 +1,5 @@
 """Pydantic v2 schemas for inbound Sentry webhook payloads."""
 
-from __future__ import annotations
 
 from typing import Any
 

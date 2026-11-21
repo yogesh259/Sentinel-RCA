@@ -6,21 +6,20 @@ Exposes:
     draft_hotfix_pr(commit_sha, file_path, patch_summary) -> PRPreview
 """
 
-from __future__ import annotations
 
 from pathlib import Path
 
 import asyncpg
 
-from src.core.config import settings
+from src.core.config import config
 from src.schemas.mcp.tracker import IssueRecord, PRPreview
 
 
 def _get_clean_dsn() -> str:
     raw = (
-        settings.database_url.get_secret_value()
-        if hasattr(settings.database_url, "get_secret_value")
-        else str(settings.database_url)
+        config.database_url.get_secret_value()
+        if hasattr(config.database_url, "get_secret_value")
+        else str(config.database_url)
     )
     return raw.replace("postgresql+asyncpg://", "postgresql://")
 

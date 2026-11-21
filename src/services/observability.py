@@ -3,51 +3,75 @@
 Structured Execution Trace:
   Persists per-incident run telemetry (redacted payload, nodes visited,
   MCP tool calls, latency_ms, token cost, mode, final verdict) in Postgres
-  with an in-memory deque fallback for local dev / tests.
+  with an in-memory deque fallback for local dev / offline mode / tests.
 """
-
-from __future__ import annotations
 
 import json
 import logging
 from collections import deque
 from datetime import UTC, datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+import asyncpg
+
+from src.schemas.trace import ExecutionTrace
+from src.services.postgres import get_pool
 
 logger = logging.getLogger("sentinel-rca.observability")
 
+# ── Constants ──────────────────────────────────────────────────────
 
-# ── Structured Execution Trace Schema ──────────────────────────────
+MAX_IN_MEMORY_TRACES: int = 100
+DEFAULT_TRACE_LIMIT: int = 20
 
+DB_ERRORS = (
+    asyncpg.PostgresError,
+    asyncpg.InterfaceError,
+    OSError,
+    ConnectionError,
+    TimeoutError,
+)
 
-class ExecutionTrace(BaseModel):
-    id: int | None = None
-    thread_id: str
-    incident_id: int | None = None
-    fingerprint: str = ""
-    redacted_payload: dict = Field(default_factory=dict)
-    nodes_visited: list[str] = Field(default_factory=list)
-    mcp_tool_calls: list[dict] = Field(default_factory=list)
-    latency_ms: float = 0.0
-    token_cost: float = 0.0
-    tokens_used: int = 0
-    mode: str = ""  # Active model or provider (e.g. "groq/llama-3.3-70b-versatile", "gemini/gemini-2.5-flash")
-    final_verdict: str = ""
-    created_at: datetime | None = None
+# In-memory buffer of latest traces for instant access, local testing, and offline fallback
+_IN_MEMORY_TRACES: deque[ExecutionTrace] = deque(maxlen=MAX_IN_MEMORY_TRACES)
 
 
-# In-memory buffer of latest 100 traces for instant access / offline mode
-_IN_MEMORY_TRACES: deque[dict] = deque(maxlen=100)
+def _parse_json_field(value: Any, default: Any) -> Any:
+    """Safely decode JSONB fields returned as strings or dicts from asyncpg."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return value
 
 
-# ── Postgres Trace Storage ────────────────────────────────────────
+def _row_to_execution_trace(row: asyncpg.Record) -> ExecutionTrace:
+    """Map an asyncpg execution_traces Record to an ExecutionTrace instance."""
+    return ExecutionTrace(
+        id=row["id"],
+        thread_id=row["thread_id"],
+        incident_id=row["incident_id"],
+        fingerprint=row["fingerprint"],
+        redacted_payload=_parse_json_field(row["redacted_payload"], {}),
+        nodes_visited=_parse_json_field(row["nodes_visited"], []),
+        mcp_tool_calls=_parse_json_field(row["mcp_tool_calls"], []),
+        latency_ms=row["latency_ms"],
+        token_cost=row["token_cost"],
+        tokens_used=row["tokens_used"],
+        mode=row.get("mode", ""),
+        final_verdict=row["final_verdict"],
+        created_at=row["created_at"],
+    )
+
+
+# ── Postgres Trace Storage & Retrieval ─────────────────────────────
 
 
 async def ensure_traces_table() -> None:
-    """Create the execution_traces table in Postgres if it doesn't exist."""
-    from src.services.postgres import get_pool
-
+    """Create the execution_traces table and indexes in Postgres if not present."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -73,7 +97,7 @@ async def ensure_traces_table() -> None:
                 """
             )
             logger.info("Observability traces table ensured.")
-    except Exception as exc:
+    except DB_ERRORS as exc:
         logger.warning("Could not initialize execution_traces table in Postgres: %s", exc)
 
 
@@ -81,38 +105,36 @@ async def record_execution_trace(
     thread_id: str,
     incident_id: int | None,
     fingerprint: str,
-    redacted_payload: dict,
+    redacted_payload: dict[str, Any],
     nodes_visited: list[str],
-    mcp_tool_calls: list[dict],
+    mcp_tool_calls: list[dict[str, Any]],
     latency_ms: float,
     token_cost: float,
     tokens_used: int,
     final_verdict: str,
     mode: str = "",
 ) -> ExecutionTrace:
-    """Persist structured execution trace to Postgres and in-memory buffer."""
+    """Persist structured execution trace to in-memory buffer and Postgres."""
     now = datetime.now(UTC)
-    trace_dict = {
-        "id": len(_IN_MEMORY_TRACES) + 1,
-        "thread_id": thread_id,
-        "incident_id": incident_id,
-        "fingerprint": fingerprint,
-        "redacted_payload": redacted_payload,
-        "nodes_visited": nodes_visited,
-        "mcp_tool_calls": mcp_tool_calls,
-        "latency_ms": round(latency_ms, 2),
-        "token_cost": round(token_cost, 6),
-        "tokens_used": tokens_used,
-        "mode": mode,
-        "final_verdict": final_verdict,
-        "created_at": now,
-    }
-    _IN_MEMORY_TRACES.appendleft(trace_dict)
+    trace = ExecutionTrace(
+        id=len(_IN_MEMORY_TRACES) + 1,
+        thread_id=thread_id,
+        incident_id=incident_id,
+        fingerprint=fingerprint,
+        redacted_payload=redacted_payload,
+        nodes_visited=nodes_visited,
+        mcp_tool_calls=mcp_tool_calls,
+        latency_ms=round(latency_ms, 2),
+        token_cost=round(token_cost, 6),
+        tokens_used=tokens_used,
+        mode=mode,
+        final_verdict=final_verdict,
+        created_at=now,
+    )
+    _IN_MEMORY_TRACES.appendleft(trace)
 
     # Attempt Postgres persistence
     try:
-        from src.services.postgres import get_pool
-
         pool = await get_pool()
         async with pool.acquire() as conn:
             row_id: int = await conn.fetchval(
@@ -138,34 +160,32 @@ async def record_execution_trace(
                 final_verdict,
                 now,
             )
-            trace_dict["id"] = row_id
-    except Exception as exc:
+            trace.id = row_id
+    except DB_ERRORS as exc:
         logger.debug("Postgres unavailable for trace storage (%s), stored in-memory only", exc)
 
-    return ExecutionTrace(**trace_dict)
+    return trace
 
 
 async def update_execution_trace_verdict(
     thread_id: str,
     final_verdict: str,
     nodes_visited: list[str] | None = None,
-    mcp_tool_calls: list[dict] | None = None,
+    mcp_tool_calls: list[dict[str, Any]] | None = None,
 ) -> None:
     """Update the final_verdict and optional telemetry for an existing execution trace."""
     # Update in-memory buffer
     for t in _IN_MEMORY_TRACES:
-        if t.get("thread_id") == thread_id:
-            t["final_verdict"] = final_verdict
+        if t.thread_id == thread_id:
+            t.final_verdict = final_verdict
             if nodes_visited is not None:
-                t["nodes_visited"] = nodes_visited
+                t.nodes_visited = nodes_visited
             if mcp_tool_calls is not None:
-                t["mcp_tool_calls"] = mcp_tool_calls
+                t.mcp_tool_calls = mcp_tool_calls
             break
 
     # Update in Postgres
     try:
-        from src.services.postgres import get_pool
-
         pool = await get_pool()
         async with pool.acquire() as conn:
             if nodes_visited is not None and mcp_tool_calls is not None:
@@ -192,15 +212,44 @@ async def update_execution_trace_verdict(
                     final_verdict,
                     thread_id,
                 )
-    except Exception as exc:
+    except DB_ERRORS as exc:
         logger.debug("Failed updating trace verdict in Postgres (%s)", exc)
 
 
-async def get_latest_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
+async def get_execution_trace_by_thread_id(thread_id: str) -> ExecutionTrace | None:
+    """Retrieve a single execution trace by thread ID, falling back to in-memory buffer."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, thread_id, incident_id, fingerprint, redacted_payload,
+                       nodes_visited, mcp_tool_calls, latency_ms, token_cost,
+                       tokens_used, mode, final_verdict, created_at
+                FROM execution_traces
+                WHERE thread_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1;
+                """,
+                thread_id,
+            )
+            if row:
+                return _row_to_execution_trace(row)
+    except DB_ERRORS as exc:
+        logger.debug("Failed reading trace %s from Postgres (%s), checking in-memory buffer", thread_id, exc)
+
+    # In-memory fallback
+    for trace in _IN_MEMORY_TRACES:
+        if trace.thread_id == thread_id:
+            return trace
+    return None
+
+
+async def get_latest_execution_traces(
+    limit: int = DEFAULT_TRACE_LIMIT,
+) -> list[ExecutionTrace]:
     """Retrieve recent traces from Postgres, falling back to memory buffer."""
     try:
-        from src.services.postgres import get_pool
-
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -215,33 +264,9 @@ async def get_latest_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
                 limit,
             )
             if rows:
-                return [
-                    ExecutionTrace(
-                        id=r["id"],
-                        thread_id=r["thread_id"],
-                        incident_id=r["incident_id"],
-                        fingerprint=r["fingerprint"],
-                        redacted_payload=json.loads(r["redacted_payload"])
-                        if isinstance(r["redacted_payload"], str)
-                        else r["redacted_payload"],
-                        nodes_visited=json.loads(r["nodes_visited"])
-                        if isinstance(r["nodes_visited"], str)
-                        else r["nodes_visited"],
-                        mcp_tool_calls=json.loads(r["mcp_tool_calls"])
-                        if isinstance(r["mcp_tool_calls"], str)
-                        else r["mcp_tool_calls"],
-                        latency_ms=r["latency_ms"],
-                        token_cost=r["token_cost"],
-                        tokens_used=r["tokens_used"],
-                        mode=r.get("mode", ""),
-                        final_verdict=r["final_verdict"],
-                        created_at=r["created_at"],
-                    )
-                    for r in rows
-                ]
-    except Exception as exc:
+                return [_row_to_execution_trace(r) for r in rows]
+    except DB_ERRORS as exc:
         logger.debug("Failed reading traces from Postgres (%s), using in-memory buffer", exc)
 
     # In-memory fallback
-    traces = list(_IN_MEMORY_TRACES)[:limit]
-    return [ExecutionTrace(**t) for t in traces]
+    return list(_IN_MEMORY_TRACES)[:limit]
