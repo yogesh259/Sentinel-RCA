@@ -292,7 +292,7 @@ async def ingest_incident(
         if hasattr(settings.groq_api_key, "get_secret_value")
         else str(settings.groq_api_key)
     )
-    mode = "LIVE_GROQ" if groq_key else "LIVE_GROQ"
+    mode = "SIMULATION" if (settings.simulation_mode or not groq_key) else "LIVE_GROQ"
 
     # Step 6: Persist to Postgres
     incident_id: int | None = None

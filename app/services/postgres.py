@@ -8,15 +8,24 @@ from app.core.config import settings
 
 _pool: asyncpg.Pool | None = None
 
+def _get_clean_dsn() -> str:
+    raw = (
+        settings.database_url.get_secret_value()
+        if hasattr(settings.database_url, "get_secret_value")
+        else str(settings.database_url)
+    )
+    return raw.replace("postgresql+asyncpg://", "postgresql://")
+
+
 # asyncpg expects a plain postgresql:// DSN (no +asyncpg driver suffix)
-_DSN_CLEAN = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+_DSN_CLEAN = _get_clean_dsn()
 
 
 async def get_pool() -> asyncpg.Pool:
     """Return (and cache) the asyncpg connection pool."""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(_DSN_CLEAN, min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(_get_clean_dsn(), min_size=2, max_size=10)
     return _pool
 
 

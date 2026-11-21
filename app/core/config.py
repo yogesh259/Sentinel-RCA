@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from typing import Literal
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings — only the variables defined in ARCHITECTURE.md §6."""
+    """Application settings — supporting local, staging, and prod deployments."""
 
-    # Neon Postgres DSN
-    database_url: str = "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel_rca"
+    # Deployment environment & simulation flag
+    env: Literal["local", "staging", "prod"] = "local"
+    simulation_mode: bool = False
 
-    # Upstash Redis URL
-    redis_url: str = "redis://localhost:6379/0"
+    # Infrastructure secrets (required, no hardcoded default)
+    database_url: SecretStr = Field(description="Postgres connection DSN")
+    redis_url: SecretStr = Field(description="Redis connection URL")
 
     # Webhook HMAC-SHA256 shared secret
     webhook_secret: SecretStr = Field(default=SecretStr(""))
 
-    # Groq API key — empty means Simulation Mode
+    # Groq API key — empty or simulation_mode=True means Simulation Mode
     groq_api_key: SecretStr = Field(default=SecretStr(""))
 
     # Rate limiting
@@ -45,4 +50,11 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """Return cached application settings loaded from environment/.env."""
+    return Settings()
+
+
+# Module-level convenience export
+settings: Settings = get_settings()

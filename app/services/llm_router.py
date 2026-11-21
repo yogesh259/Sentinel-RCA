@@ -89,6 +89,12 @@ class CostTracker:
 Tier = Literal["triage", "deep_rca"]
 Mode = Literal["LIVE_GROQ", "SIMULATION"]
 
+# Deterministic simulation response when running in simulation mode
+_SIMULATION_RESPONSE = (
+    "[SIMULATION] Deterministic analysis: stack trace parsed, "
+    "exception correlated with recent commits. No live LLM was called."
+)
+
 
 def _get_groq_api_key() -> str:
     """Return raw string Groq API key."""
@@ -101,12 +107,16 @@ async def llm_complete(
     tier: Tier,
     messages: list[dict[str, str]],
 ) -> tuple[str, Mode]:
-    """Route an LLM completion request to Groq via litellm.
+    """Route an LLM completion request to Groq via litellm (or Simulation Mode).
 
     Raises:
-        LLMConfigurationError: If GROQ_API_KEY is missing.
+        LLMConfigurationError: If GROQ_API_KEY is missing and not in simulation mode.
         LLMRateLimitError: If Groq upstream returns a 429 or rate limit error.
     """
+    if settings.simulation_mode:
+        logger.info("LLM call [%s]: Simulation Mode enabled (skipping live API)", tier)
+        return _SIMULATION_RESPONSE, "SIMULATION"
+
     api_key = _get_groq_api_key()
     if not api_key:
         logger.error("LLM call [%s] failed: GROQ_API_KEY is not configured.", tier)
@@ -146,4 +156,6 @@ async def llm_complete(
 
 def get_model_key(tier: Tier) -> str:
     """Return the cost-table key for the given tier."""
+    if settings.simulation_mode:
+        return "simulation"
     return TRIAGE_MODEL if tier == "triage" else DEEP_RCA_MODEL

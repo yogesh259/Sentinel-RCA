@@ -286,3 +286,31 @@ class TestWebhookEndpoint:
         assert statuses.count("deduplicated") == 4
         assert codes[0] == 202
         assert all(c == 200 for c in codes[1:])
+
+
+class TestSettingsConfiguration:
+    def test_settings_types_and_defaults(self):
+        from app.core.config import get_settings
+
+        cfg = get_settings()
+        assert cfg.env in ("local", "staging", "prod")
+        assert isinstance(cfg.simulation_mode, bool)
+        assert hasattr(cfg.database_url, "get_secret_value")
+        assert hasattr(cfg.redis_url, "get_secret_value")
+        assert cfg.max_graph_steps == 6
+        assert cfg.dedup_ttl_seconds == 1800
+
+    def test_settings_missing_required_fields_raises(self, monkeypatch):
+        from pydantic import ValidationError
+
+        from app.core.config import Settings
+
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(_env_file=None)
+        errors = exc_info.value.errors()
+        fields = {e["loc"][0] for e in errors}
+        assert "database_url" in fields
+        assert "redis_url" in fields

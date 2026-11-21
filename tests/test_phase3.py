@@ -52,6 +52,23 @@ class TestLLMRouterAndCost:
         assert get_model_key("triage") == "groq/llama-3.1-8b-instant"
         assert get_model_key("deep_rca") == "groq/llama-3.3-70b-versatile"
 
+    def test_router_model_key_in_simulation_mode(self, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "simulation_mode", True)
+        assert get_model_key("triage") == "simulation"
+        assert get_model_key("deep_rca") == "simulation"
+
+    @pytest.mark.asyncio
+    async def test_llm_complete_simulation_mode_returns_mock(self, monkeypatch):
+        from app.core.config import settings
+        from app.services.llm_router import llm_complete
+
+        monkeypatch.setattr(settings, "simulation_mode", True)
+        content, mode = await llm_complete("triage", [{"role": "user", "content": "hi"}])
+        assert "[SIMULATION]" in content
+        assert mode == "SIMULATION"
+
     @pytest.mark.asyncio
     async def test_llm_complete_missing_api_key_raises_configuration_error(self, monkeypatch):
         from app.core.config import settings
