@@ -21,13 +21,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from app.graph.authorisation import (
+from src.graph.authorisation import (
     Action,
     AuthDecision,
     ProposedResolution,
     check_authorisation,
 )
-from app.schemas.mcp.git import CommitInfo
+from src.schemas.mcp.git import CommitInfo
 
 logger = logging.getLogger("sentinel-rca.workflow")
 
@@ -120,9 +120,9 @@ class RCAState(TypedDict, total=False):
 
 async def parse_trace_node(state: RCAState) -> dict:
     """Node 1: Parse raw stack trace via trace_mcp (runs redaction first)."""
-    from app.core.redaction import redact_dict
-    from app.mcp_servers.git_mcp import resolve_victim_file
-    from app.mcp_servers.trace_mcp import parse_stack_trace
+    from src.core.redaction import redact_dict
+    from src.mcp_servers.git_mcp import resolve_victim_file
+    from src.mcp_servers.trace_mcp import parse_stack_trace
 
     payload = state.get("raw_payload", {})
     dict_redactions: list[str] = []
@@ -203,7 +203,7 @@ async def parse_trace_node(state: RCAState) -> dict:
 
 async def semantic_dedup_node(state: RCAState) -> dict:
     """Node 2: Search existing issues via tracker_mcp; triage classification."""
-    from app.mcp_servers import tracker_mcp
+    from src.mcp_servers import tracker_mcp
 
     exception_type = state.get("exception_type", "")
     target_file = state.get("target_file", "")
@@ -243,7 +243,7 @@ async def investigate_git_node(state: RCAState) -> dict:
             "step_count": current_steps + 1,
         }
 
-    from app.mcp_servers.git_mcp import (
+    from src.mcp_servers.git_mcp import (
         GitInputValidationError,
         get_commit_diff,
         get_recent_commits,
@@ -264,7 +264,7 @@ async def investigate_git_node(state: RCAState) -> dict:
 
         for cp in candidate_paths:
             try:
-                commits = get_recent_commits(cp, limit=5)
+                commits = await get_recent_commits(cp, limit=5)
                 if commits:
                     target_file = cp
                     break
@@ -278,7 +278,7 @@ async def investigate_git_node(state: RCAState) -> dict:
 
     if commits:
         try:
-            diff = get_commit_diff(commits[0].sha)
+            diff = await get_commit_diff(commits[0].sha)
             diff_text = diff.diff
 
             if "NullPointer" in exception_type or "null" in exception_message.lower():
@@ -407,7 +407,7 @@ async def authorisation_gate_node(state: RCAState) -> dict:
 
 async def execute_action_node(state: RCAState) -> dict:
     """Node 5: Execute action via tracker_mcp or finalize status."""
-    from app.mcp_servers import tracker_mcp
+    from src.mcp_servers import tracker_mcp
 
     current_steps = state.get("step_count", 0)
     proposal_dict = state.get("proposal", {})

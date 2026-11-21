@@ -12,9 +12,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings — supporting local, staging, and prod deployments."""
 
-    # Deployment environment & simulation flag
+    # Deployment environment
     env: Literal["local", "staging", "prod"] = "local"
-    simulation_mode: bool = False
 
     # Infrastructure secrets (required, no hardcoded default)
     database_url: SecretStr = Field(description="Postgres connection DSN")
@@ -23,15 +22,27 @@ class Settings(BaseSettings):
     # Webhook HMAC-SHA256 shared secret
     webhook_secret: SecretStr = Field(default=SecretStr(""))
 
-    # Groq API key — empty or simulation_mode=True means Simulation Mode
+    # Primary & Fallback LLM provider keys
     groq_api_key: SecretStr = Field(default=SecretStr(""))
+    gemini_api_key: SecretStr = Field(default=SecretStr(""))
+
+    # Configurable LLM models
+    primary_llm_model: str = Field(
+        default="groq/llama-3.3-70b-versatile",
+        description="Primary model for deep RCA and analysis",
+    )
+    fallback_llm_model: str = Field(
+        default="gemini/gemini-2.5-flash",
+        description="Fallback model if primary encounters rate limits, timeouts, or quota limits",
+    )
 
     # Rate limiting
     groq_daily_limit: int = Field(default=30, ge=1, description="Max daily live Groq calls")
     rate_limit_per_hour: int = Field(default=5, ge=1, description="Hourly rate limit per IP")
 
-    # Git repo path for git_mcp
-    local_repo_path: str = "./victim-service"
+    # GitHub integration for git_mcp (cloud-native)
+    github_token: SecretStr = Field(default=SecretStr(""), description="GitHub personal access token")
+    github_repo: str = Field(default="", description="Target GitHub repo in 'owner/repo' format")
 
     # MCP auth token (optional — used for Streamable HTTP transport)
     mcp_auth_token: SecretStr = Field(default=SecretStr(""))

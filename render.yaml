@@ -18,8 +18,10 @@ services:
         value: "30"
       - key: RATE_LIMIT_PER_HOUR
         value: "5"
-      - key: LOCAL_REPO_PATH
-        value: "./victim-service"
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
     healthCheckPath: /health
 
   # ── Streamlit Ops Console ──────────────────────────────────────────

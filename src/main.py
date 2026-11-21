@@ -20,38 +20,38 @@ from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response, status
 from langgraph.types import Command
 
-from app.core.config import settings
-from app.core.observability import (
+from src.core.config import settings
+from src.core.observability import (
     ExecutionTrace,
     ensure_traces_table,
     get_latest_execution_traces,
     record_execution_trace,
     update_execution_trace_verdict,
 )
-from app.core.redaction import redact_dict
-from app.graph.authorisation import check_rbac
-from app.graph.workflow import (
+from src.core.redaction import redact_dict
+from src.graph.authorisation import check_rbac
+from src.graph.workflow import (
     get_all_pending_approvals,
     get_graph,
     get_pending_approval,
     remove_pending_approval,
 )
-from app.mcp_servers.tracker_mcp import ensure_issues_table
-from app.schemas.approval import (
+from src.mcp_servers.tracker_mcp import ensure_issues_table
+from src.schemas.approval import (
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
     ApprovalItem,
 )
-from app.schemas.incident import IngestResponse
-from app.services.postgres import close_pool, ensure_tables, get_pool, insert_incident
-from app.services.redis_dedup import (
+from src.schemas.incident import IngestResponse
+from src.services.postgres import close_pool, ensure_tables, get_pool, insert_incident
+from src.services.redis_dedup import (
     check_and_set_dedup,
     check_rate_limit,
     close_redis,
     compute_fingerprint,
     get_redis,
 )
-from app.services.webhook_auth import verify_signature
+from src.services.webhook_auth import verify_signature
 
 logger = logging.getLogger("sentinel-rca")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -65,7 +65,7 @@ async def run_rca_workflow(
     incident_id: int | None,
     fingerprint: str,
     payload: dict,
-    mode: str = "SIMULATION",
+    mode: str = "",
 ) -> None:
     """Execute the LangGraph RCA workflow in the background and record telemetry."""
     logger.info(
@@ -194,7 +194,7 @@ def _extract_exception_info(payload: dict) -> tuple[str, str, int, str]:
         raw_trace = payload.get("stack_trace", "")
 
         if raw_trace:
-            from app.mcp_servers.trace_mcp import parse_stack_trace
+            from src.mcp_servers.trace_mcp import parse_stack_trace
 
             parsed = parse_stack_trace(raw_trace)
             exception_type = parsed.exception_type or error
@@ -287,12 +287,7 @@ async def ingest_incident(
             detail="Rate limit exceeded. Too many incident ingestion requests; please retry later.",
         )
 
-    groq_key = (
-        settings.groq_api_key.get_secret_value()
-        if hasattr(settings.groq_api_key, "get_secret_value")
-        else str(settings.groq_api_key)
-    )
-    mode = "SIMULATION" if (settings.simulation_mode or not groq_key) else "LIVE_GROQ"
+    mode = settings.primary_llm_model
 
     # Step 6: Persist to Postgres
     incident_id: int | None = None

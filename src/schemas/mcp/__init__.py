@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from app.schemas.mcp.git import BlameEntry, CommitInfo, DiffOutput
-from app.schemas.mcp.trace import ParsedStackTrace
-from app.schemas.mcp.tracker import (
+from src.schemas.mcp.git import BlameEntry, CommitInfo, DiffOutput
+from src.schemas.mcp.trace import ParsedStackTrace
+from src.schemas.mcp.tracker import (
     IssueRecord,
     IssueStatus,
     PRPreview,

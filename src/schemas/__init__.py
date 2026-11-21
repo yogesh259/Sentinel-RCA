@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from app.schemas.approval import (
+from src.schemas.approval import (
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
     ApprovalItem,
     DecisionType,
     ReviewerRole,
 )
-from app.schemas.incident import (
+from src.schemas.incident import (
     ExecutionMode,
     IncidentEvent,
     IncidentRecord,
@@ -17,7 +17,7 @@ from app.schemas.incident import (
     IngestResponse,
     WebhookResponse,
 )
-from app.schemas.mcp import (
+from src.schemas.mcp import (
     BlameEntry,
     CommitInfo,
     DiffOutput,
@@ -28,7 +28,7 @@ from app.schemas.mcp import (
     PRStatus,
     SeverityLevel,
 )
-from app.schemas.sentry import (
+from src.schemas.sentry import (
     SentryEventData,
     SentryException,
     SentryExceptionEntry,

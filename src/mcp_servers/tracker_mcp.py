@@ -12,8 +12,8 @@ from pathlib import Path
 
 import asyncpg
 
-from app.core.config import settings
-from app.schemas.mcp.tracker import IssueRecord, PRPreview
+from src.core.config import settings
+from src.schemas.mcp.tracker import IssueRecord, PRPreview
 
 
 def _get_clean_dsn() -> str:
@@ -27,6 +27,7 @@ def _get_clean_dsn() -> str:
 
 # asyncpg expects plain postgresql:// DSN
 _DSN_CLEAN = _get_clean_dsn()
+_pool: asyncpg.Pool | None = None
 
 
 async def _get_pool() -> asyncpg.Pool:

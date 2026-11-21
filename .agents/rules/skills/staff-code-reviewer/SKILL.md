@@ -21,12 +21,12 @@ Do not praise boilerplate. For every finding, cite `file:line`, explain **why** 
 - **Pydantic v2 Over Manual Mapping:** Flag manual dict-copy loops and Pydantic v1 syntax (`@validator`, `class Config`, `json_encoders`). Require `BaseModel`, `field_validator`, `ConfigDict`, `model_validate()`, and `model_dump()`.
 - **Strict Type Annotations:** Every function signature must have parameter and return type hints (`dict[str, Any]`, `list[str]`, `X | None`).
 - **No Swallowed Exceptions:** Flag bare `except Exception:` blocks that pass or turn 500s into silent 200s. Catch specific exceptions (`RedisError`, `asyncpg.PostgresError`, `litellm.exceptions.APIError`) and log with context.
-- **Constants Over Magic Numbers:** Move hardcoded TTLs, step limits, or thresholds to `app/core/config.py` or module-level `UPPER_SNAKE_CASE` constants.
+- **Constants Over Magic Numbers:** Move hardcoded TTLs, step limits, or thresholds to `src/core/config.py` or module-level `UPPER_SNAKE_CASE` constants.
 
 ## 2. FastAPI & Async Concurrency (`fastapi-best-practices`)
 - **Zero Blocking I/O in `async def`:** Flag `requests`, `time.sleep`, blocking `open()`, sync DB drivers, or `subprocess.run` inside `async def`. Require native async SDKs (`httpx.AsyncClient`, `asyncpg`, `redis.asyncio`, `asyncio.create_subprocess_exec`) or `await run_in_threadpool(...)` only as a last resort.
 - **No `asyncio.run()` Inside Routes:** Flag any manual event loop or thread creation inside FastAPI routes.
-- **Thin Routers, Fat Services:** Route handlers (`app/main.py`) must only validate input, call services/workflows, and map exceptions to HTTP status codes (`202` queued, `401` invalid HMAC, `403` RBAC denial, `503` unhealthy).
+- **Thin Routers, Fat Services:** Route handlers (`src/main.py`) must only validate input, call services/workflows, and map exceptions to HTTP status codes (`202` queued, `401` invalid HMAC, `403` RBAC denial, `503` unhealthy).
 - **Modern DI & Lifespan:** Prefer `Annotated[T, Depends(...)]` for dependencies and `lifespan` context manager (never `@app.on_event("startup")`) for initializing/closing Postgres and Redis pools.
 - **No Double Validation:** Do not both return a Pydantic instance *and* declare the same class as `response_model=` unless intentionally filtering fields.
 
@@ -42,7 +42,7 @@ Do not praise boilerplate. For every finding, cite `file:line`, explain **why** 
 - **Observability Accounting:** Verify every LLM call records prompt/completion tokens, latency, mode (`LIVE_GROQ` | `SIMULATION`), and cost into `ExecutionTrace`.
 
 ## 5. MCP Server & Security Hygiene (OWASP LLM Top 10)
-- **Path Traversal & Shell Injection:** In `git_mcp`, verify all file paths are resolved and asserted to stay inside `LOCAL_REPO_PATH` (`Path.resolve().is_relative_to(...)`), reject shell metacharacters, and never use `shell=True`.
+- **Path Traversal & Injection:** In `git_mcp`, verify all file paths and commit SHAs are validated against safe character sets, reject path traversal sequences (`..`), shell metacharacters, and handle GitHub REST API errors securely.
 - **Pre-LLM Secret Redaction:** Verify `detect-secrets` + email masking runs *before* any payload is written to Postgres or sent to an LLM.
 - **Prompt Injection Defense:** Untrusted stack traces and commit messages must be wrapped in explicit XML delimiters (e.g., `<untrusted_stacktrace>...</untrusted_stacktrace>`) and checked by the deterministic policy gate before tool execution.
 - **Zero Secret Logging:** Flag any `logger.*` or `print()` outputting raw headers, webhook bodies, API keys, or DB URLs.

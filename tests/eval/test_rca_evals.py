@@ -24,16 +24,16 @@ from pathlib import Path
 
 import pytest
 
-from app.core.config import settings
-from app.core.redaction import redact_payload
-from app.graph.authorisation import (
+from src.core.config import settings
+from src.core.redaction import redact_payload
+from src.graph.authorisation import (
     AuthDecision,
     ProposedResolution,
     check_authorisation,
     detect_prompt_injection,
 )
-from app.mcp_servers import git_mcp
-from app.mcp_servers.trace_mcp import parse_stack_trace
+from src.mcp_servers import git_mcp
+from src.mcp_servers.trace_mcp import parse_stack_trace
 
 GOLDEN_BUGS_PATH = Path(__file__).parent / "golden_bugs.json"
 LATEST_REPORT_PATH = Path(__file__).parent / "latest_report.json"
@@ -47,6 +47,7 @@ def load_golden_scenarios() -> list[dict]:
     return data.get("scenarios", [])
 
 
+@pytest.mark.eval
 @pytest.mark.skipif(
     os.getenv("EVAL_MODE", "mock").strip().lower() == "off",
     reason="Eval suite skipped cleanly because EVAL_MODE='off'",
@@ -121,7 +122,7 @@ class TestGoldenBenchmarkSuite:
                 used_path = None
                 for cp in candidate_paths:
                     try:
-                        commits = git_mcp.get_recent_commits(cp, limit=5)
+                        commits = await git_mcp.get_recent_commits(cp, limit=5)
                         if commits:
                             used_path = cp
                             break
@@ -133,7 +134,7 @@ class TestGoldenBenchmarkSuite:
                 detected_sha = commits[0].short_sha
                 if parsed.line_number > 0 and used_path:
                     try:
-                        blame = git_mcp.get_git_blame(used_path, parsed.line_number)
+                        blame = await git_mcp.get_git_blame(used_path, parsed.line_number)
                         if blame.commit_sha:
                             detected_sha = blame.commit_sha[:7]
                     except Exception:
@@ -237,7 +238,7 @@ class TestGoldenBenchmarkSuite:
                         )
 
                     # 2. Deep RCA call (Groq 70B)
-                    diff_res = git_mcp.get_commit_diff(commits[0].sha)
+                    diff_res = await git_mcp.get_commit_diff(commits[0].sha)
                     diff_snippet = diff_res.diff[:2500]
                     rca_messages = [
                         {

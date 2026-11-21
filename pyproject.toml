@@ -39,5 +39,12 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "evals"]
+testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "unit: Pure, fast unit tests",
+    "integration: Integration tests (API, DB, Redis, MCP)",
+    "eval: RCA benchmark and evaluation tests",
+    "no_llm_mock: Do not apply automatic mock to llm_complete",
+]
+

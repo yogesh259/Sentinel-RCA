@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 
-from app.core.config import settings
+from src.core.config import settings
 
 # Module-level client — initialised lazily via get_redis()
 _redis_client: aioredis.Redis | None = None

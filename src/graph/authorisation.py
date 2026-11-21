@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.core.config import settings
+from src.core.config import settings
 
 # ── ProposedResolution schema ─────────────────────────────────────
 

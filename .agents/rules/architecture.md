@@ -50,7 +50,7 @@ Postgres serves 3 clean responsibilities (no external observability SaaS):
 `parse_trace (trace_mcp)` -> `semantic_dedup (Groq 8B + tracker_mcp)` -> `investigate_git (Groq 70B + git_mcp)` -> `authorisation_gate (Pure Python)` -> `execute_action (tracker_mcp)`
 
 - **`trace_mcp`:** Language-agnostic parser (Java, Python, JS/TS, Go; falls back to Groq 8B for unknown formats).
-- **`git_mcp`:** Strictly read-only (`get_recent_commits`, `get_commit_diff`, `get_git_blame`). Targets configurable `LOCAL_REPO_PATH` (defaults to `./victim-service`, auto-bootstrapped on startup if missing).
+- **`git_mcp`:** Strictly read-only (`get_recent_commits`, `get_commit_diff`, `get_git_blame`, `get_file_contents`). Cloud-native via GitHub REST API (`httpx.AsyncClient`) using `GITHUB_TOKEN` and `GITHUB_REPO` with zero local disk dependency.
 - **`tracker_mcp`:** `search_existing_issues`, `create_issue`, `draft_hotfix_pr`.
 - **`authorisation_gate` (No LLM):**
   - Auto-approve `deduplicate` and `create_issue`.
@@ -59,15 +59,19 @@ Postgres serves 3 clean responsibilities (no external observability SaaS):
 
 ---
 
-## 6. Environment Variables (`app/core/config.py`)
+## 6. Environment Variables (`src/core/config.py`)
 Only these variables should exist (via Pydantic `BaseSettings`):
 - `DATABASE_URL` (Neon Postgres)
 - `REDIS_URL` (Upstash Redis)
 - `WEBHOOK_SECRET` (HMAC signing secret)
-- `GROQ_API_KEY` (Required for live LLM completions; missing key raises `LLMConfigurationError`)
+- `GROQ_API_KEY` (Primary LLM key)
+- `GEMINI_API_KEY` (Fallback LLM key)
+- `PRIMARY_LLM_MODEL` (Default: `groq/llama-3.3-70b-versatile`)
+- `FALLBACK_LLM_MODEL` (Default: `gemini/gemini-2.5-flash`)
 - `GROQ_DAILY_LIMIT` (Default: `30`)
 - `RATE_LIMIT_PER_HOUR` (Default: `5`)
-- `LOCAL_REPO_PATH` (Default: `./victim-service`)
+- `GITHUB_TOKEN` (GitHub Personal Access Token)
+- `GITHUB_REPO` (GitHub repository in `owner/repo` format)
 - `MCP_AUTH_TOKEN` (Optional — used when running MCP over Streamable HTTP)
 
 ---

@@ -4,6 +4,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .env
-victim-service/
 *.db
 .DS_Store
+tests/eval/latest_report.json

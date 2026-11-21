@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from app.core.config import settings
+from src.core.config import settings
 
 
 def verify_signature(payload_body: bytes, signature_header: str | None) -> bool:

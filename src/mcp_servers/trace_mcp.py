@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 
-from app.core.redaction import redact_payload
-from app.schemas.mcp.trace import ParsedStackTrace
+from src.core.redaction import redact_payload
+from src.schemas.mcp.trace import ParsedStackTrace
 
 # ── Java stack-trace patterns ─────────────────────────────────────
 
@@ -130,7 +130,7 @@ def parse_stack_trace(raw_trace: str) -> ParsedStackTrace:
         exc_msg = (py_exc.group("message") or "") if py_exc else ""
 
         file_name = last.group("file")
-        # Derive class_name from file path: app/services/foo.py → app.services.foo
+        # Derive class_name from file path: src/services/foo.py → src.services.foo
         class_name = file_name.replace("/", ".").removesuffix(".py")
 
         return ParsedStackTrace(

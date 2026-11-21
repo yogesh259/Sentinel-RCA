@@ -26,7 +26,7 @@ class IncidentEvent(BaseModel):
 
 # ── Domain Types & API Response Schemas ────────────────────────────
 
-ExecutionMode = Literal["LIVE_GROQ", "SIMULATION", ""]
+ExecutionMode = str
 IncidentStatus = Literal["queued", "processing", "completed", "escalated", "rejected", "failed"]
 
 

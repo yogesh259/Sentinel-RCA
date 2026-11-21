@@ -9,28 +9,18 @@ from pathlib import Path
 import pytest
 
 # Ensure repository root is on sys.path
-REPO_ROOT = Path(__file__).parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 # Inject default test environment variables before modules import settings
 os.environ.setdefault("ENV", "local")
-os.environ.setdefault("SIMULATION_MODE", "false")
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel_rca",
 )
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("WEBHOOK_SECRET", "local-dev-secret-123")
-
-
-def pytest_addoption(parser):
-    parser.addoption(
-        "--live",
-        action="store_true",
-        default=False,
-        help="Run evals using live LLM APIs instead of deterministic mock mode",
-    )
 
 
 @pytest.fixture

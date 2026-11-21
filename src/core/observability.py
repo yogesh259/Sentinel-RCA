@@ -32,7 +32,7 @@ class ExecutionTrace(BaseModel):
     latency_ms: float = 0.0
     token_cost: float = 0.0
     tokens_used: int = 0
-    mode: str = ""  # "LIVE_GROQ" | "SIMULATION"
+    mode: str = ""  # Active model or provider (e.g. "groq/llama-3.3-70b-versatile", "gemini/gemini-2.5-flash")
     final_verdict: str = ""
     created_at: datetime | None = None
 
@@ -46,7 +46,7 @@ _IN_MEMORY_TRACES: deque[dict] = deque(maxlen=100)
 
 async def ensure_traces_table() -> None:
     """Create the execution_traces table in Postgres if it doesn't exist."""
-    from app.services.postgres import get_pool
+    from src.services.postgres import get_pool
 
     try:
         pool = await get_pool()
@@ -111,7 +111,7 @@ async def record_execution_trace(
 
     # Attempt Postgres persistence
     try:
-        from app.services.postgres import get_pool
+        from src.services.postgres import get_pool
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -164,7 +164,7 @@ async def update_execution_trace_verdict(
 
     # Update in Postgres
     try:
-        from app.services.postgres import get_pool
+        from src.services.postgres import get_pool
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -199,7 +199,7 @@ async def update_execution_trace_verdict(
 async def get_latest_execution_traces(limit: int = 20) -> list[ExecutionTrace]:
     """Retrieve recent traces from Postgres, falling back to memory buffer."""
     try:
-        from app.services.postgres import get_pool
+        from src.services.postgres import get_pool
 
         pool = await get_pool()
         async with pool.acquire() as conn:
