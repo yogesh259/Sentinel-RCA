@@ -213,6 +213,21 @@ class TestWebhookEndpoint:
         assert data["fingerprint"]
         assert data["llm_cost"] == "$0"
 
+    def test_rate_limit_exceeded_returns_429(self, client):
+        """When rate limit is exceeded, return 429 Too Many Requests immediately."""
+        body = json.dumps(GENERIC_PAYLOAD).encode()
+        sig = _sign(body)
+
+        with patch("app.main.check_rate_limit", new_callable=AsyncMock, return_value=False):
+            resp = client.post(
+                "/v1/incidents/ingest",
+                content=body,
+                headers={"X-Webhook-Signature": sig},
+            )
+            assert resp.status_code == 429
+            data = resp.json()
+            assert "Rate limit exceeded" in data["detail"]
+
     def test_generic_payload_queued(self, client):
         body = json.dumps(GENERIC_PAYLOAD).encode()
         sig = _sign(body)

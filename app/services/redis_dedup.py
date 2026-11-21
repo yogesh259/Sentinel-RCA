@@ -64,8 +64,8 @@ async def check_and_set_dedup(
 async def check_rate_limit(client_ip: str) -> bool:
     """Check per-IP/hour and global/day rate limits using INCR + EXPIRE.
 
-    Returns True if the request is within limits and may use live Groq.
-    Returns False if the caller should fall back to Simulation Mode.
+    Returns True if the request is within limits.
+    Returns False if rate limits are exceeded (caller should reject with HTTP 429).
     """
     r = await get_redis()
 

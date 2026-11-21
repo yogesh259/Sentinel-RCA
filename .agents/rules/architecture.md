@@ -11,7 +11,7 @@ Self-hosted, language-agnostic Root-Cause Analysis (RCA) engine for production e
 - **LLM Routing:** `litellm` Python SDK -> Groq ONLY:
   - **Triage Tier:** `groq/llama-3.1-8b-instant` (deduplication, fallback trace parsing).
   - **Deep RCA Tier:** `groq/llama-3.3-70b-versatile` (Git diff correlation & root cause).
-  - **Fallback:** Deterministic Simulation Mode if `GROQ_API_KEY` is missing or rate limit is hit.
+  - **Resilience & Rate Limits:** No silent Simulation Mode fallback on rate limits. Redis rate-limit exhaustion rejects inbound webhooks immediately with `HTTP 429 (Too Many Requests)`. Upstream `litellm.RateLimitError` or missing `GROQ_API_KEY` raises domain exceptions (`LLMRateLimitError`, `LLMConfigurationError`) surfaced cleanly to callers and UI.
 - **Workflow Engine:** LangGraph with `AsyncPostgresSaver` checkpointer (`interrupt()` for HITL).
 - **Tool Layer:** 3 standalone `FastMCP` servers (`trace_mcp`, `git_mcp`, `tracker_mcp`) supporting `stdio` (Render single container) and Streamable HTTP with `MCP_AUTH_TOKEN` (Docker microservices).
 - **Secret Redaction:** Yelp's `detect-secrets` library (deterministic secret scanning before any LLM call or DB write).
@@ -30,7 +30,7 @@ Self-hosted, language-agnostic Root-Cause Analysis (RCA) engine for production e
    - **Auth:** HMAC-SHA256 verification (`X-Webhook-Signature` using `WEBHOOK_SECRET`).
    - **Adapter:** Normalizes both Sentry payloads and generic payloads (`service`, `error`, `stack_trace`) into `IncidentEvent`.
    - **Redis Storm Suppression:** `SETNX` on `sha256(exception + file + line)` with 30-min TTL. Duplicates return `200 OK` (`$0` cost).
-   - **Redis Rate Limiter:** Caps live Groq usage (e.g., `5` runs/IP/hour, `30` runs/day globally); excess traffic falls back to Simulation Mode.
+   - **Redis Rate Limiter:** Caps live Groq usage (e.g., `5` runs/IP/hour, `30` runs/day globally); excess traffic returns `HTTP 429 Too Many Requests` immediately with a clear detail message.
    - **Response:** Queues LangGraph background task and returns `202 Accepted` immediately.
 2. `GET /v1/approvals` — Lists paused LangGraph threads awaiting HITL approval.
 3. `POST /v1/approvals/{thread_id}/decision` — Accepts `decision` (`approve` | `reject`) and `reviewer_role` (`junior_dev` | `staff_sre`). Enforces RBAC (`junior_dev` -> `403` for `draft_hotfix_pr`) and resumes the paused Postgres checkpoint.
@@ -64,7 +64,7 @@ Only these variables should exist (via Pydantic `BaseSettings`):
 - `DATABASE_URL` (Neon Postgres)
 - `REDIS_URL` (Upstash Redis)
 - `WEBHOOK_SECRET` (HMAC signing secret)
-- `GROQ_API_KEY` (Optional — defaults to Simulation Mode if unset)
+- `GROQ_API_KEY` (Required for live LLM completions; missing key raises `LLMConfigurationError`)
 - `GROQ_DAILY_LIMIT` (Default: `30`)
 - `RATE_LIMIT_PER_HOUR` (Default: `5`)
 - `LOCAL_REPO_PATH` (Default: `./victim-service`)

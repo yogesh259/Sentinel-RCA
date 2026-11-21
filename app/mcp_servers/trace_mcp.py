@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 
-from app.core.mcp_schemas import ParsedStackTrace
 from app.core.redaction import redact_payload
+from app.schemas.mcp.trace import ParsedStackTrace
 
 # ── Java stack-trace patterns ─────────────────────────────────────
 

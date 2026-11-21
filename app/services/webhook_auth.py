@@ -19,8 +19,14 @@ def verify_signature(payload_body: bytes, signature_header: str | None) -> bool:
     if not signature_header:
         return False
 
+    secret = (
+        settings.webhook_secret.get_secret_value()
+        if hasattr(settings.webhook_secret, "get_secret_value")
+        else str(settings.webhook_secret)
+    )
+
     expected = hmac.new(
-        settings.webhook_secret.encode(),
+        secret.encode(),
         payload_body,
         hashlib.sha256,
     ).hexdigest()

@@ -1,5 +1,8 @@
 """Pytest configuration for evals suite."""
 
+from __future__ import annotations
+
+import os
 import sys
 from pathlib import Path
 
@@ -21,5 +24,15 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture
-def live_mode(request):
-    return request.config.getoption("--live")
+def eval_mode(request) -> str:
+    """Resolve eval mode from CLI flag or EVAL_MODE env var."""
+    if request.config.getoption("--live"):
+        return "live"
+    env_val = os.getenv("EVAL_MODE", "mock").strip().lower()
+    return env_val if env_val in ("live", "off", "mock") else "mock"
+
+
+@pytest.fixture
+def live_mode(eval_mode: str) -> bool:
+    """Backward-compatible boolean fixture for live LLM mode."""
+    return eval_mode == "live"

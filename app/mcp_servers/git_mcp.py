@@ -15,7 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from app.core.mcp_schemas import BlameEntry, CommitInfo, DiffOutput
+from app.schemas.mcp.git import BlameEntry, CommitInfo, DiffOutput
 
 # ── Configuration ─────────────────────────────────────────────────
 

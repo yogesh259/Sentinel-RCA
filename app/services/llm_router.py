@@ -1,9 +1,10 @@
-"""LLM router — litellm SDK routing to Groq with Simulation fallback.
+"""LLM router — litellm SDK routing to Groq without silent simulation fallback on rate limits.
 
 Two tiers:
   - Triage: groq/llama-3.1-8b-instant (dedup, fallback trace parsing).
   - Deep RCA: groq/llama-3.3-70b-versatile (git-diff correlation & root cause).
-  - Fallback: Deterministic Simulation Mode when GROQ_API_KEY is missing or rate-limited.
+  - Rate Limits: Raises LLMRateLimitError on 429 / litellm.RateLimitError.
+  - Configuration: Raises LLMConfigurationError if GROQ_API_KEY is missing.
 """
 
 from __future__ import annotations
@@ -20,6 +21,21 @@ logger = logging.getLogger("sentinel-rca.llm_router")
 
 TRIAGE_MODEL = "groq/llama-3.1-8b-instant"
 DEEP_RCA_MODEL = "groq/llama-3.3-70b-versatile"
+
+# ── Domain Exceptions ─────────────────────────────────────────────
+
+
+class LLMError(Exception):
+    """Base domain exception for LLM errors."""
+
+
+class LLMRateLimitError(LLMError):
+    """Raised when upstream LLM provider rejects requests due to rate limits (HTTP 429)."""
+
+
+class LLMConfigurationError(LLMError):
+    """Raised when required LLM configuration (such as GROQ_API_KEY) is missing."""
+
 
 # ── Cost estimates (USD per 1M tokens) ────────────────────────────
 
@@ -73,32 +89,30 @@ class CostTracker:
 Tier = Literal["triage", "deep_rca"]
 Mode = Literal["LIVE_GROQ", "SIMULATION"]
 
-# Deterministic simulation response for when Groq is unavailable
-_SIMULATION_RESPONSE = (
-    "[SIMULATION] Deterministic analysis: stack trace parsed, "
-    "exception correlated with recent commits. No live LLM was called."
-)
 
-
-def _should_simulate() -> bool:
-    """Return True if we must fall back to Simulation Mode."""
-    return not settings.groq_api_key
+def _get_groq_api_key() -> str:
+    """Return raw string Groq API key."""
+    if hasattr(settings.groq_api_key, "get_secret_value"):
+        return settings.groq_api_key.get_secret_value()
+    return str(settings.groq_api_key)
 
 
 async def llm_complete(
     tier: Tier,
     messages: list[dict[str, str]],
-    *,
-    force_simulate: bool = False,
 ) -> tuple[str, Mode]:
-    """Route an LLM completion request to Groq via litellm or Simulation.
+    """Route an LLM completion request to Groq via litellm.
 
-    Returns:
-        (response_text, mode) where mode is "LIVE_GROQ" or "SIMULATION".
+    Raises:
+        LLMConfigurationError: If GROQ_API_KEY is missing.
+        LLMRateLimitError: If Groq upstream returns a 429 or rate limit error.
     """
-    if force_simulate or _should_simulate():
-        logger.info("LLM call [%s]: Simulation Mode (no GROQ_API_KEY or rate-limited)", tier)
-        return _SIMULATION_RESPONSE, "SIMULATION"
+    api_key = _get_groq_api_key()
+    if not api_key:
+        logger.error("LLM call [%s] failed: GROQ_API_KEY is not configured.", tier)
+        raise LLMConfigurationError(
+            "GROQ_API_KEY is not configured. Live LLM analysis cannot proceed without a valid API key."
+        )
 
     model = TRIAGE_MODEL if tier == "triage" else DEEP_RCA_MODEL
 
@@ -109,18 +123,27 @@ async def llm_complete(
             model=model,
             messages=messages,
             temperature=0.0,
-            api_key=settings.groq_api_key,
+            api_key=api_key,
         )
         content = response.choices[0].message.content or ""
         logger.info("LLM call [%s]: %s returned %d chars", tier, model, len(content))
         return content, "LIVE_GROQ"
+    except litellm.RateLimitError as exc:
+        logger.warning("Groq rate limit hit for model %s: %s", model, exc)
+        raise LLMRateLimitError(
+            f"Groq upstream rate limit exceeded for {model}: {exc}"
+        ) from exc
     except Exception as exc:
-        logger.warning("Groq call failed (%s), falling back to Simulation Mode: %s", model, exc)
-        return _SIMULATION_RESPONSE, "SIMULATION"
+        exc_str = str(exc).lower()
+        if "rate limit" in exc_str or "429" in exc_str or getattr(exc, "status_code", None) == 429:
+            logger.warning("Groq rate limit hit for model %s: %s", model, exc)
+            raise LLMRateLimitError(
+                f"Groq upstream rate limit exceeded for {model}: {exc}"
+            ) from exc
+        logger.error("Groq call failed (%s): %s", model, exc, exc_info=True)
+        raise
 
 
 def get_model_key(tier: Tier) -> str:
     """Return the cost-table key for the given tier."""
-    if _should_simulate():
-        return "simulation"
     return TRIAGE_MODEL if tier == "triage" else DEEP_RCA_MODEL

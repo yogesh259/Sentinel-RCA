@@ -29,12 +29,6 @@ from app.core.observability import (
     update_execution_trace_verdict,
 )
 from app.core.redaction import redact_dict
-from app.core.schemas import (
-    ApprovalDecisionRequest,
-    ApprovalDecisionResponse,
-    ApprovalItem,
-    IngestResponse,
-)
 from app.graph.authorisation import check_rbac
 from app.graph.workflow import (
     get_all_pending_approvals,
@@ -43,6 +37,12 @@ from app.graph.workflow import (
     remove_pending_approval,
 )
 from app.mcp_servers.tracker_mcp import ensure_issues_table
+from app.schemas.approval import (
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
+    ApprovalItem,
+)
+from app.schemas.incident import IngestResponse
 from app.services.postgres import close_pool, ensure_tables, get_pool, insert_incident
 from app.services.redis_dedup import (
     check_and_set_dedup,
@@ -272,7 +272,7 @@ async def ingest_incident(
             llm_cost="$0",
         )
 
-    # Step 5: Redis rate limit check -> determines Live Groq vs. Simulation mode
+    # Step 5: Redis rate limit check — reject immediately on rate-limit exhaustion
     client_ip = request.client.host if request.client else "127.0.0.1"
     try:
         is_rate_allowed = await check_rate_limit(client_ip)
@@ -280,7 +280,19 @@ async def ingest_incident(
         logger.warning("Rate limit check failed (%s); defaulting to allowed", exc)
         is_rate_allowed = True
 
-    mode = "LIVE_GROQ" if (is_rate_allowed and settings.groq_api_key) else "SIMULATION"
+    if not is_rate_allowed:
+        logger.warning("Rate limit exceeded for client IP %s; returning HTTP 429", client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Too many incident ingestion requests; please retry later.",
+        )
+
+    groq_key = (
+        settings.groq_api_key.get_secret_value()
+        if hasattr(settings.groq_api_key, "get_secret_value")
+        else str(settings.groq_api_key)
+    )
+    mode = "LIVE_GROQ" if groq_key else "LIVE_GROQ"
 
     # Step 6: Persist to Postgres
     incident_id: int | None = None

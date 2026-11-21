@@ -21,13 +21,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from app.core.mcp_schemas import CommitInfo
 from app.graph.authorisation import (
     Action,
     AuthDecision,
     ProposedResolution,
     check_authorisation,
 )
+from app.schemas.mcp.git import CommitInfo
 
 logger = logging.getLogger("sentinel-rca.workflow")
 

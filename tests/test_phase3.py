@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.core.mcp_schemas import IssueRecord, PRPreview
 from app.graph.authorisation import (
     AuthDecision,
     ProposedResolution,
@@ -28,6 +27,7 @@ from app.graph.workflow import (
     reset_graph,
     set_default_checkpointer,
 )
+from app.schemas.mcp.tracker import IssueRecord, PRPreview
 from app.services.llm_router import CostTracker, get_model_key
 
 # ═══════════════════════════════════════════════════════════════════
@@ -48,15 +48,39 @@ class TestLLMRouterAndCost:
         assert abs(tracker.cost_usd - 0.985) < 1e-4
         assert "$0.9850" in tracker.summary
 
-    def test_router_model_key(self, monkeypatch):
-        from app.core.config import settings
-
-        monkeypatch.setattr(settings, "groq_api_key", "")
-        assert get_model_key("triage") == "simulation"
-
-        monkeypatch.setattr(settings, "groq_api_key", "gsk_test")
+    def test_router_model_key(self):
         assert get_model_key("triage") == "groq/llama-3.1-8b-instant"
         assert get_model_key("deep_rca") == "groq/llama-3.3-70b-versatile"
+
+    @pytest.mark.asyncio
+    async def test_llm_complete_missing_api_key_raises_configuration_error(self, monkeypatch):
+        from app.core.config import settings
+        from app.services.llm_router import LLMConfigurationError, llm_complete
+
+        monkeypatch.setattr(settings, "groq_api_key", "")
+        with pytest.raises(LLMConfigurationError) as exc_info:
+            await llm_complete("triage", [{"role": "user", "content": "test"}])
+        assert "GROQ_API_KEY is not configured" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_llm_complete_rate_limit_raises_domain_exception(self, monkeypatch):
+        from unittest.mock import patch
+
+        import litellm
+
+        from app.core.config import settings
+        from app.services.llm_router import LLMRateLimitError, llm_complete
+
+        monkeypatch.setattr(settings, "groq_api_key", "gsk_test")
+        rate_err = litellm.RateLimitError(
+            message="Rate limit reached for model",
+            model="groq/llama-3.1-8b-instant",
+            llm_provider="groq",
+        )
+        with patch("litellm.acompletion", side_effect=rate_err):
+            with pytest.raises(LLMRateLimitError) as exc_info:
+                await llm_complete("triage", [{"role": "user", "content": "test"}])
+            assert "rate limit exceeded" in str(exc_info.value).lower()
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pydantic_settings import BaseSettings
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -15,28 +16,33 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Webhook HMAC-SHA256 shared secret
-    webhook_secret: str = ""
+    webhook_secret: SecretStr = Field(default=SecretStr(""))
 
     # Groq API key — empty means Simulation Mode
-    groq_api_key: str = ""
+    groq_api_key: SecretStr = Field(default=SecretStr(""))
 
     # Rate limiting
-    groq_daily_limit: int = 30
-    rate_limit_per_hour: int = 5
+    groq_daily_limit: int = Field(default=30, ge=1, description="Max daily live Groq calls")
+    rate_limit_per_hour: int = Field(default=5, ge=1, description="Hourly rate limit per IP")
 
     # Git repo path for git_mcp
     local_repo_path: str = "./victim-service"
 
     # MCP auth token (optional — used for Streamable HTTP transport)
-    mcp_auth_token: str = ""
+    mcp_auth_token: SecretStr = Field(default=SecretStr(""))
 
     # Circuit breaker
-    max_graph_steps: int = 6
+    max_graph_steps: int = Field(default=6, ge=1, le=50, description="Max LangGraph loop iterations")
 
     # Deduplication fingerprint TTL in seconds (30 minutes)
-    dedup_ttl_seconds: int = 1800
+    dedup_ttl_seconds: int = Field(default=1800, gt=0, description="Redis dedup key TTL in seconds")
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
 
 
 settings = Settings()
