@@ -39,7 +39,7 @@ _TARGET_ENTITIES: list[str] = [*_BUILTIN_ENTITIES, *_CUSTOM_SECRET_PATTERNS.keys
 
 
 @lru_cache(maxsize=1)
-def _get_engines() -> tuple[AnalyzerEngine, AnonymizerEngine]:
+def get_redaction_engines() -> tuple[AnalyzerEngine, AnonymizerEngine]:
     """Initialize and cache Presidio engines using the lightweight en_core_web_sm model."""
     provider = NlpEngineProvider(
         nlp_configuration={
@@ -49,11 +49,17 @@ def _get_engines() -> tuple[AnalyzerEngine, AnonymizerEngine]:
     )
     analyzer = AnalyzerEngine(nlp_engine=provider.create_engine(), supported_languages=["en"])
 
-    for entity, regex in _CUSTOM_SECRET_PATTERNS.items():
+    for entity_name, pattern_regex in _CUSTOM_SECRET_PATTERNS.items():
         analyzer.registry.add_recognizer(
             PatternRecognizer(
-                supported_entity=entity,
-                patterns=[Pattern(name=f"{entity.lower()}_pattern", regex=regex, score=0.95)],
+                supported_entity=entity_name,
+                patterns=[
+                    Pattern(
+                        name=f"{entity_name.lower()}_pattern",
+                        regex=pattern_regex,
+                        score=0.95,
+                    )
+                ],
             )
         )
 
@@ -61,39 +67,51 @@ def _get_engines() -> tuple[AnalyzerEngine, AnonymizerEngine]:
 
 
 def redact_payload(text: str) -> tuple[str, list[str]]:
-    """Mask PII and developer secrets in *text*. Returns (sanitised_text, redaction_types)."""
+    """Mask PII and developer secrets in text. Returns (sanitized_text, redaction_types)."""
     if not text:
         return text, []
 
-    analyzer, anonymizer = _get_engines()
-    results = analyzer.analyze(text=text, entities=_TARGET_ENTITIES, language="en")
-    if not results:
+    analyzer, anonymizer = get_redaction_engines()
+    detected_entities = analyzer.analyze(
+        text=text,
+        entities=_TARGET_ENTITIES,
+        language="en",
+    )
+    if not detected_entities:
         return text, []
 
     operators = {
-        r.entity_type: OperatorConfig("replace", {"new_value": f"[REDACTED_{r.entity_type}]"})
-        for r in results
+        finding.entity_type: OperatorConfig(
+            "replace",
+            {"new_value": f"[REDACTED_{finding.entity_type}]"},
+        )
+        for finding in detected_entities
     }
-    anonymized = anonymizer.anonymize(text=text, analyzer_results=results, operators=operators)
-    types_applied = sorted({f"[REDACTED_{item.entity_type}]" for item in anonymized.items})
-    return anonymized.text, types_applied
+    anonymized = anonymizer.anonymize(
+        text=text,
+        analyzer_results=detected_entities,
+        operators=operators,
+    )
+    redaction_types = sorted({f"[REDACTED_{item.entity_type}]" for item in anonymized.items})
+    return anonymized.text, redaction_types
 
 
 def redact_dict(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """Recursively redact all string values in *payload*. Returns (sanitised_dict, redaction_types)."""
-    applied: set[str] = set()
+    """Recursively redact strings in a nested dictionary or collection."""
+    applied_redactions: set[str] = set()
 
-    def _walk(val: Any) -> Any:
-        if isinstance(val, str):
-            sanitised, types = redact_payload(val)
-            applied.update(types)
-            return sanitised
-        if isinstance(val, dict):
-            return {k: _walk(v) for k, v in val.items()}
-        if isinstance(val, list):
-            return [_walk(v) for v in val]
-        if isinstance(val, tuple):
-            return tuple(_walk(v) for v in val)
-        return val
+    def redact_value(value: Any) -> Any:
+        if isinstance(value, str):
+            sanitized, redaction_types = redact_payload(value)
+            applied_redactions.update(redaction_types)
+            return sanitized
+        if isinstance(value, dict):
+            return {key: redact_value(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [redact_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(redact_value(item) for item in value)
+        return value
 
-    return {k: _walk(v) for k, v in payload.items()}, sorted(applied)
+    sanitized_payload = {key: redact_value(val) for key, val in payload.items()}
+    return sanitized_payload, sorted(applied_redactions)
