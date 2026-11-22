@@ -21,13 +21,13 @@ from langgraph.types import Command
 
 from src.core.config import config
 from src.core.redaction import redact_dict
-from src.graph.authorisation import check_rbac
-from src.graph.workflow import (
+from src.graph import (
     get_all_pending_approvals,
     get_graph,
     get_pending_approval,
     remove_pending_approval,
 )
+from src.graph.authorisation import check_rbac
 from src.mcp_servers.tracker_mcp import ensure_issues_table
 from src.schemas.approval import (
     ApprovalDecisionRequest,
@@ -100,7 +100,7 @@ async def run_rca_workflow(
 
         nodes_visited = [
             "parse_trace",
-            "semantic_dedup",
+            "dedup",
             "investigate_git",
             "authorisation_gate",
         ]
@@ -403,7 +403,7 @@ async def submit_approval_decision(
         nodes = (
             list(existing_trace.nodes_visited)
             if existing_trace
-            else ["parse_trace", "semantic_dedup", "investigate_git", "authorisation_gate"]
+            else ["parse_trace", "dedup", "investigate_git", "authorisation_gate"]
         )
         if "execute_action" not in nodes and body.decision == "approve":
             nodes.append("execute_action")

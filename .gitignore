@@ -7,3 +7,5 @@ __pycache__/
 *.db
 .DS_Store
 tests/eval/latest_report.json
+.claude/settings.local.json
+CLAUDE.local.md
