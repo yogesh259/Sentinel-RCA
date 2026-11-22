@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from src.graph import get_graph, get_pending_approval, list_pending_approvals
-from src.graph.authorisation import check_rbac
+from src.graph.policy import check_rbac
 from src.schemas.approval import ApprovalDecisionRequest, ApprovalDecisionResponse, ApprovalItem
 from src.services.execution_traces import get_latest_execution_traces
 from src.services.workflow_runner import resume_workflow

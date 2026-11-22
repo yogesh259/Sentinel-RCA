@@ -1,4 +1,4 @@
-"""Export all 5 LangGraph workflow node functions."""
+"""The five RCA pipeline nodes, in execution order."""
 
 from src.graph.nodes.dedup import dedup_node
 from src.graph.nodes.execute import execute_node

@@ -15,10 +15,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.graph.authorisation import AuthDecision, check_authorisation
-from src.graph.nodes.gate import build_proposal
 from src.graph.nodes.investigate import investigate_git_node
 from src.graph.nodes.parse_trace import parse_trace_node
+from src.graph.policy import AuthDecision, build_proposal, check_authorisation
 from src.schemas.mcp.git import DiffOutput
 from src.services import llm_router
 from src.services.mcp_client import call_tool
@@ -99,16 +98,14 @@ class FakeRedis:
 async def analyse(raw_trace: str) -> tuple[dict, Any, float]:
     """Run parse -> investigate -> gate policy; return (state, auth result, latency_ms)."""
     started = time.perf_counter()
-    state: dict = {"raw_trace": raw_trace, "step_count": 0}
+    state: dict = {"raw_trace": raw_trace}
     llm_calls: list[dict] = []
     for node in (parse_trace_node, investigate_git_node):
         update = await node(state)
         llm_calls += update.pop("llm_calls", [])
         state |= update
     state["llm_calls"] = llm_calls
-    auth = check_authorisation(
-        build_proposal(state), step_count=state["step_count"], raw_trace=raw_trace
-    )
+    auth = check_authorisation(build_proposal(state), raw_trace=raw_trace)
     return state, auth, (time.perf_counter() - started) * 1000
 
 

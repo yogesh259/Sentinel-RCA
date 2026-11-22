@@ -38,7 +38,6 @@ async def dedup_node(state: RCAState) -> dict:
     """Node 2: flag the incident as a duplicate of an open issue, if it is one."""
     exception_type = state.get("exception_type", "")
     target_file = state.get("target_file", "")
-    steps = state.get("step_count", 0) + 1
 
     try:
         found = await call_tool(
@@ -61,20 +60,14 @@ async def dedup_node(state: RCAState) -> dict:
             logger.warning("Triage dedup unavailable, treating as new: %s", exc)
             verdict = DedupVerdict(reason=f"Dedup judgement unavailable: {exc}")
 
-    matched = [i for i in issues if i["id"] == verdict.duplicate_of]
+    is_duplicate = verdict.duplicate_of is not None
     summary = (
         f"Duplicate of issue #{verdict.duplicate_of}: {verdict.reason}"
-        if matched
+        if is_duplicate
         else f"New incident ({len(issues)} candidate issue(s) checked). {verdict.reason}"
     )
     return {
-        "is_duplicate": bool(matched),
-        "existing_issues": matched,
+        "is_duplicate": is_duplicate,
         "dedup_summary": summary,
-        "triage_summary": summary,
         "llm_calls": llm_calls,
-        "step_count": steps,
     }
-
-
-__all__ = ["dedup_node", "judge_duplicate"]

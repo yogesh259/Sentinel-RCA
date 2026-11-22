@@ -64,11 +64,11 @@ async def llm_locate(parsed: ParsedStackTrace, raw: str) -> tuple[ParsedStackTra
 
 async def parse_trace_node(state: RCAState) -> dict:
     """Node 1: Parse the redacted stack trace and locate its frames in the repository."""
-    payload, dict_redactions = redact_dict(state.get("raw_payload") or {})
+    payload, _ = redact_dict(state.get("raw_payload") or {})
     source = state.get("raw_trace", "") or payload_to_trace(payload)
     # Redact here, not only at the gateway: raw_trace is persisted in checkpoints and
     # quoted in the RCA prompt, so this node must never pass an unredacted trace on.
-    raw, trace_redactions = redact_payload(source)
+    raw, _ = redact_payload(source)
 
     parsed = await call_tool("trace", "parse_stack_trace", {"raw_trace": raw}, ParsedStackTrace)
     llm_calls: list[dict] = []
@@ -84,14 +84,7 @@ async def parse_trace_node(state: RCAState) -> dict:
         "exception_type": parsed.exception_type,
         "exception_message": parsed.exception_message,
         "target_file": primary.get("path") or primary.get("file", ""),
-        "class_name": primary.get("module", ""),
-        "method_name": primary.get("function", ""),
         "line_number": primary.get("line", 0),
         "frames": frames,
-        "redaction_types": sorted(set(trace_redactions) | set(dict_redactions)),
         "llm_calls": llm_calls,
-        "step_count": state.get("step_count", 0) + 1,
     }
-
-
-__all__ = ["parse_trace_node", "resolve_frames"]

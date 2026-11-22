@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from src.api import approvals, health, incidents, traces
 from src.db.session import dispose_engine
-from src.graph import set_default_checkpointer
+from src.graph import init_graph
 from src.graph.checkpointer import open_checkpointer
 from src.services.mcp_client import open_mcp_sessions
 from src.services.redis_dedup import close_redis
@@ -18,7 +18,7 @@ logger = logging.getLogger("sentinel-rca")
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     async with open_checkpointer() as checkpointer, open_mcp_sessions():
-        set_default_checkpointer(checkpointer)
+        init_graph(checkpointer)
         logger.info("Sentinel-RCA started.")
         yield
 

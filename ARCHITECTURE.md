@@ -61,11 +61,11 @@ Schema is owned by migrations, never by application code: `python -m src.db.migr
   3. *Validate (code):* a suspect or evidence SHA that was not retrieved is discarded and confidence forced to `low`. Prompt-injection traces skip the LLM entirely.
 - **`git_mcp`:** read-only (`resolve_repo_path`, `get_recent_commits`, `get_commit_diff`, `get_blame_range`, `get_file_contents`) via GitHub REST/GraphQL with `GITHUB_TOKEN`/`GITHUB_REPO`; validated inputs; redacted outputs.
 - **`tracker_mcp`:** `search_existing_issues`, `create_issue`, `draft_hotfix_pr` (a PR *preview*; git access is read-only by design).
-- **`authorisation_gate` (no LLM):**
+- **`authorisation_gate` (no LLM, rules in `src/graph/policy.py`):**
   - Action policy: duplicate → `deduplicate`; investigation error → `escalate`; suspect + `high` confidence + `high|critical` severity + fix → `draft_hotfix_pr`; otherwise `create_issue`.
   - Auto-approve `deduplicate` and `create_issue` with medium/high confidence.
   - Always `interrupt()` for `draft_hotfix_pr`, `CRITICAL` severity, or a low-confidence `create_issue`.
-  - Block and escalate if `step_count >= 6` (circuit breaker) or prompt-injection patterns are detected.
+  - Block and escalate if prompt-injection patterns are detected. The pipeline is a straight line with no loops; LangGraph's `recursion_limit` bounds any run.
 
 ---
 
