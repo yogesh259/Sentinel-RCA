@@ -19,10 +19,10 @@ from src.graph.authorisation import AuthDecision, check_authorisation
 from src.graph.nodes.gate import build_proposal
 from src.graph.nodes.investigate import investigate_git_node
 from src.graph.nodes.parse_trace import parse_trace_node
-from src.main import _extract_exception_info
 from src.schemas.mcp.git import DiffOutput
 from src.services import llm_router
 from src.services.mcp_client import call_tool
+from src.services.payload_adapter import summarise_incident
 from src.services.redis_dedup import check_and_set_dedup, compute_fingerprint
 
 EVAL_DIR = Path(__file__).parent
@@ -153,8 +153,9 @@ async def run_storm_scenarios(scenarios: list[dict]) -> list[dict]:
     results = []
     for sc in scenarios:
         payload = {"service": "victim-service", "error": "", "stack_trace": sc["raw_trace"]}
-        exc_type, file_name, line, _ = _extract_exception_info(payload)
-        is_new, dup_count = await check_and_set_dedup(compute_fingerprint(exc_type, file_name, line))
+        incident = await summarise_incident(payload)
+        fingerprint = compute_fingerprint(incident.exception_type, incident.file_name, incident.line_number)
+        is_new, dup_count = await check_and_set_dedup(fingerprint)
         if sc["category"] == "storm_duplicate":
             results.append(
                 {

@@ -2,7 +2,7 @@
 
 HITL pauses can last hours; Render's free tier restarts idle containers. Persisting
 checkpoints in Postgres is what lets an approval survive a restart and resume exactly
-where the graph stopped.
+where the graph stopped. The checkpoint tables are created by src/db/migrate.py.
 """
 
 import logging
@@ -16,7 +16,6 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from src.core.config import config
-from src.services.postgres import postgres_dsn
 
 logger = logging.getLogger("sentinel-rca.graph.checkpointer")
 
@@ -33,12 +32,11 @@ async def open_checkpointer() -> AsyncIterator[BaseCheckpointSaver]:
     staging/prod refuse to start without durable HITL state.
     """
     pool = AsyncConnectionPool(
-        conninfo=postgres_dsn(), max_size=5, open=False, kwargs=_CONNECTION_KWARGS
+        conninfo=config.database_url.get_secret_value(), max_size=5, open=False, kwargs=_CONNECTION_KWARGS
     )
     try:
         await pool.open(wait=True, timeout=10)
         saver = AsyncPostgresSaver(pool)
-        await saver.setup()
     except Exception as exc:
         await pool.close()
         if config.env != "local":

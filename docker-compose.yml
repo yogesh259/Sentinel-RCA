@@ -31,6 +31,16 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Schema migrations (runs once, then exits) ─────────────────────
+  migrate:
+    build: .
+    command: ["uv", "run", "python", "-m", "src.db.migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel_rca
+
   # ── FastAPI application ───────────────────────────────────────────
   api:
     build: .
@@ -39,13 +49,13 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
       # Override for container networking (host values come from .env)
-      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@postgres:5432/sentinel_rca
+      DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel_rca
       REDIS_URL: redis://redis:6379/0
 
   # ── Streamlit Ops & Chaos Console ────────────────────────────────
@@ -59,7 +69,8 @@ services:
       - api
     environment:
       API_BASE_URL: http://api:8000
-      WEBHOOK_SECRET: change-me-to-a-real-secret
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      GITHUB_REPO: ${GITHUB_REPO}
 
 volumes:
   pgdata:

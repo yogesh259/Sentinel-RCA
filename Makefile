@@ -1,13 +1,25 @@
-.PHONY: help simulate-outage test test-eval
+.PHONY: help migrate migration check-schema simulate-outage test test-eval
 
 PYTHON ?= .venv/bin/python
 PYTEST ?= .venv/bin/pytest
 
 help:
 	@echo "Sentinel-RCA Commands:"
+	@echo "  make migrate            - Apply pending DB migrations (needs DATABASE_URL)"
+	@echo "  make migration m=\"...\" - Draft a migration from model changes (review it!)"
+	@echo "  make check-schema       - Fail if src/db/models.py and the database disagree"
 	@echo "  make simulate-outage    - Fire 5 rapid webhooks to test storm deduplication"
 	@echo "  make test               - Run benchmark evaluation suite"
 	@echo "  make test-eval          - Run benchmark evaluation suite"
+
+migrate:
+	uv run python -m src.db.migrate
+
+migration:
+	uv run alembic revision --autogenerate -m "$(m)"
+
+check-schema:
+	uv run alembic check
 
 simulate-outage:
 	@SECRET=$${WEBHOOK_SECRET:-local-dev-secret-123}; \

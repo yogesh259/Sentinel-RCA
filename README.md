@@ -75,7 +75,7 @@ Live results: _not yet published. Run the live eval against your victim repo and
 
 ```bash
 cp .env.example .env          # set GROQ_API_KEY, GITHUB_TOKEN, GITHUB_REPO, WEBHOOK_SECRET
-docker compose up --build     # API :8000, console :8501, Postgres, Redis
+docker compose up --build     # Postgres, Redis, migrations, then API :8000 and console :8501
 make simulate-outage          # 1 analysed incident + 4 suppressed repeats
 ```
 
@@ -86,6 +86,10 @@ Generic payload:
 ```json
 {"service": "orders", "error": "NullPointerException", "stack_trace": "java.lang.NullPointerException: ...\n\tat com.acme.OrderController.create(OrderController.java:34)"}
 ```
+
+Running the API against your own Postgres/Redis (e.g. Neon + Upstash): set `DATABASE_URL` and `REDIS_URL`, run `make migrate` once per deploy, then start the API. The app never creates tables itself.
+
+Schema changes (JPA-style): edit the entity in `src/db/models.py`, run `make migration m="add foo column"` to draft the revision under `migrations/versions/`, review it, then `make migrate`. `make check-schema` fails if entities and database disagree.
 
 Development: `uv run ruff check . && uv run pytest`.
 

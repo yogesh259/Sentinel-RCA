@@ -13,9 +13,10 @@ RUN uv sync --frozen --no-dev
 
 # Copy application code and console
 COPY src/ src/
+# Schema migrations, run by `python -m src.db.migrate` before the API starts.
+COPY alembic.ini ./
+COPY migrations/ migrations/
 COPY ui/ ui/
-# Eval reports for the console's Eval tab (live_report.json is committed once published).
-COPY tests/eval/ tests/eval/
 
 EXPOSE 8000
 

@@ -1,4 +1,4 @@
-"""Pydantic v2 schemas for execution traces and observability telemetry."""
+"""Pydantic v2 schema for one execution_traces audit row."""
 
 from datetime import datetime
 from typing import Any
@@ -19,8 +19,8 @@ class ExecutionTrace(BaseModel):
     nodes_visited: list[str] = Field(default_factory=list)
     mcp_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     latency_ms: float = 0.0
-    token_cost: float = 0.0
+    cost_usd: float = 0.0
     tokens_used: int = 0
-    mode: str = ""  # Active model or provider (e.g. "groq/llama-3.3-70b-versatile")
+    models_used: str = ""
     final_verdict: str = ""
     created_at: datetime | None = None

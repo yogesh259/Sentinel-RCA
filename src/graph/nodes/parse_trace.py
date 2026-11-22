@@ -8,31 +8,13 @@ from src.schemas.mcp.trace import ParsedStackTrace, StackFrame
 from src.schemas.rca import TraceLocation
 from src.services import llm_router
 from src.services.mcp_client import call_tool
+from src.services.payload_adapter import payload_to_trace
 from src.services.rca_prompts import build_trace_messages
 
 logger = logging.getLogger("sentinel-rca.nodes.parse_trace")
 
 # Only the deepest few frames are worth resolving/blaming; outer frames are routing noise.
 MAX_FRAMES = 3
-
-
-def sentry_payload_to_trace(payload: dict) -> str:
-    """Rebuild a JVM-style trace from a Sentry webhook so one parser handles both formats."""
-    event = payload.get("data", {}).get("event", payload.get("data", {}))
-    values = event.get("exception", {}).get("values", [])
-    if not values:
-        return ""
-
-    top = values[0]
-    lines = [f"{top.get('type', 'UnknownException')}: {top.get('value', '')}"]
-    culprit = event.get("culprit", "")
-    # Sentry lists frames outermost-first; JVM traces print deepest first.
-    for frame in reversed(top.get("stacktrace", {}).get("frames", [])):
-        func = frame.get("function", "?")
-        if culprit and "." not in func and culprit.endswith(func):
-            func = culprit
-        lines.append(f"\tat {func}({frame.get('filename', '?')}:{frame.get('lineno', 0)})")
-    return "\n".join(lines)
 
 
 async def resolve_frames(frames: list[StackFrame]) -> list[dict]:
@@ -83,11 +65,7 @@ async def llm_locate(parsed: ParsedStackTrace, raw: str) -> tuple[ParsedStackTra
 async def parse_trace_node(state: RCAState) -> dict:
     """Node 1: Parse the redacted stack trace and locate its frames in the repository."""
     payload, dict_redactions = redact_dict(state.get("raw_payload") or {})
-    source = (
-        state.get("raw_trace", "")
-        or payload.get("stack_trace", "")  # generic webhook format
-        or sentry_payload_to_trace(payload)
-    )
+    source = state.get("raw_trace", "") or payload_to_trace(payload)
     # Redact here, not only at the gateway: raw_trace is persisted in checkpoints and
     # quoted in the RCA prompt, so this node must never pass an unredacted trace on.
     raw, trace_redactions = redact_payload(source)
@@ -116,4 +94,4 @@ async def parse_trace_node(state: RCAState) -> dict:
     }
 
 
-__all__ = ["parse_trace_node", "resolve_frames", "sentry_payload_to_trace"]
+__all__ = ["parse_trace_node", "resolve_frames"]

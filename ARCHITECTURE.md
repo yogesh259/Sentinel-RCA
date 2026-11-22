@@ -10,6 +10,7 @@ Design principle: **code retrieves and decides, the LLM judges.** Deterministic 
 ## 2. Production Tech Stack ($0 Deployment)
 - **Hosting:** Render (FastAPI + Streamlit) + Neon (Postgres) + Upstash (Redis).
 - **Backend:** Python 3.11+, FastAPI, Pydantic v2 (`uv` for dependency management).
+- **Persistence:** SQLAlchemy 2.0 async ORM over psycopg 3 (the single Postgres driver); Alembic migrations.
 - **LLM Routing:** `litellm` with two tiers, Groq primary and Gemini fallback:
   - **Triage tier:** `groq/llama-3.1-8b-instant` — semantic dedup, fallback trace parsing.
   - **Deep RCA tier:** `PRIMARY_LLM_MODEL` (`groq/llama-3.3-70b-versatile`) — root-cause judgement.
@@ -41,6 +42,8 @@ Design principle: **code retrieves and decides, the LLM judges.** Deterministic 
 ---
 
 ## 4. Storage & Observability (Neon Postgres)
+Schema is owned by migrations, never by application code: `python -m src.db.migrate` applies Alembic SQL revisions (`migrations/versions/`) plus LangGraph's checkpoint `setup()`. It runs before the API starts (docker compose `migrate` service, Render start command). Runtime code only reads and writes rows, through ORM entities (`src/db/models.py`) and repositories (`src/repositories/`); `alembic check` verifies entities and schema agree. LangGraph's checkpoint tables are library-owned and excluded from the ORM and autogenerate.
+
 1. `issues` — Mini issue tracker owned by `tracker_mcp`.
 2. LangGraph checkpoint tables — paused/resumed workflow state per `thread_id`.
 3. `execution_traces` — Audit log per incident: redacted payload, `nodes_visited`, the real MCP tool calls (server, tool, args, latency, ok), tokens, cost USD, models used, verdict. Every node appends to append-only state lists; nothing is reconstructed after the fact.
@@ -93,7 +96,19 @@ MCP servers read their own scoped settings (`GitServerSettings`, `TrackerServerS
 
 ---
 
-## 8. Code Quality Standards
-- No god-classes, dead code, or cryptic `_` helper chains.
+## 8. Code Layout
+- `src/main.py` — bootstrap only: logging, lifespan (tables, checkpointer, MCP sessions), router registration.
+- `src/api/` — HTTP layer, one `APIRouter` per REST resource (`incidents`, `approvals`, `traces`, `health`). Translates HTTP to service calls; no business logic.
+- `src/services/` — business logic and integrations (`payload_adapter`, `workflow_runner`, `execution_traces`, `redis_dedup`, `llm_router`, `mcp_client`, ...).
+- `src/graph/` — LangGraph state, nodes and policy; knows nothing about HTTP.
+- `src/mcp_servers/` — tool processes; never imported by application code (only by `mcp_client`).
+- `src/schemas/` — Pydantic models; import from submodules directly.
+- `src/db/` — `models.py` (ORM entities, one per owned table), `engine.py` (engine/session factory), `session.py` (API `session_scope()`), `migrate.py`; `migrations/` holds Alembic revisions. No DDL anywhere else.
+- `src/repositories/` — data access per table; functions take an `AsyncSession` and never commit (the caller owns the transaction).
+- Python naming: no `Controller`/`Service` suffixes; the package name carries the layer.
+
+## 9. Code Quality Standards
+- No god-classes, dead code, redundant work, or cryptic `_` helper chains.
+- Tools are reached only over MCP via `src/services/mcp_client.py`; no direct imports of `src/mcp_servers/`.
 - Short, single-purpose functions with concise docstrings explaining *why* each exists.
 - Every change must pass `uv run ruff check .` and `uv run pytest`.

@@ -5,6 +5,7 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    dockerCommand: sh -c "uv run python -m src.db.migrate && uv run uvicorn src.main:app --host 0.0.0.0 --port 8000"
     envVars:
       # prod refuses to start without the Postgres checkpointer (durable HITL approvals).
       - key: ENV
@@ -22,7 +23,7 @@ services:
       - key: LLM_DAILY_LIMIT
         value: "30"
       - key: RATE_LIMIT_PER_HOUR
-        value: "5"
+        value: "20"
       - key: GITHUB_REPO
         sync: false
       - key: GITHUB_TOKEN
@@ -47,3 +48,8 @@ services:
           type: web
           name: sentinel-rca-api
           envVarKey: WEBHOOK_SECRET
+      - key: GITHUB_REPO
+        fromService:
+          type: web
+          name: sentinel-rca-api
+          envVarKey: GITHUB_REPO

@@ -9,14 +9,17 @@ Exposes:
 """
 
 
-from pathlib import Path
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from functools import cache
 
-import asyncpg
 from mcp.server.mcpserver import MCPServer
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.core.dsn import to_plain_dsn
+from src.db.engine import create_engine_for, make_session_factory
+from src.repositories import issues as repo
 from src.schemas.mcp.tracker import IssueRecord, PRPreview
 
 
@@ -30,58 +33,18 @@ class TrackerServerSettings(BaseSettings):
 
 settings = TrackerServerSettings()
 
-_pool: asyncpg.Pool | None = None
+
+@cache
+def session_factory() -> async_sessionmaker[AsyncSession]:
+    """Created on first use so the server still starts when the database is down."""
+    return make_session_factory(create_engine_for(settings.database_url.get_secret_value()))
 
 
-async def _get_pool() -> asyncpg.Pool:
-    """Return (and cache) the asyncpg connection pool."""
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(
-            to_plain_dsn(settings.database_url.get_secret_value()), min_size=1, max_size=5
-        )
-    return _pool
-
-
-_table_ensured = False
-
-
-async def ensure_issues_table() -> None:
-    """Create the issues table if it does not exist."""
-    global _table_ensured
-    pool = await _get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS issues (
-                id              SERIAL PRIMARY KEY,
-                title           TEXT NOT NULL,
-                exception_type  TEXT NOT NULL,
-                file_name       TEXT NOT NULL DEFAULT '',
-                root_cause      TEXT NOT NULL DEFAULT '',
-                commit_sha      TEXT NOT NULL DEFAULT '',
-                severity        TEXT NOT NULL DEFAULT 'medium',
-                status          TEXT NOT NULL DEFAULT 'open',
-                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            """
-        )
-        await conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_issues_exception_file
-            ON issues (exception_type, file_name);
-            """
-        )
-    _table_ensured = True
-
-
-async def _ensure_table_once() -> None:
-    global _table_ensured
-    if not _table_ensured:
-        try:
-            await ensure_issues_table()
-        except Exception:
-            pass
+@asynccontextmanager
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    """One transaction: commit if the block succeeds, roll back if it raises."""
+    async with session_factory().begin() as session:
+        yield session
 
 
 # ── Public API ────────────────────────────────────────────────────
@@ -97,44 +60,9 @@ async def search_existing_issues(
     Deliberately broad: whether a candidate is truly the same bug is decided by the
     triage model in the dedup node, not by string equality.
     """
-    await _ensure_table_once()
-    pool = await _get_pool()
-    base_file = Path(file_name).name if file_name else ""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, title, exception_type, file_name, root_cause,
-                   commit_sha, severity, status, created_at
-            FROM issues
-            WHERE status IN ('open', 'in_progress')
-              AND (
-                  exception_type = $1
-                  OR ($2 <> '' AND file_name = $2)
-                  OR ($3 <> '' AND file_name LIKE '%' || $3)
-              )
-            ORDER BY created_at DESC
-            LIMIT $4;
-            """,
-            exception_type,
-            file_name,
-            base_file,
-            limit,
-        )
-
-    return [
-        IssueRecord(
-            id=r["id"],
-            title=r["title"],
-            exception_type=r["exception_type"],
-            file_name=r["file_name"],
-            root_cause=r["root_cause"],
-            commit_sha=r["commit_sha"],
-            severity=r["severity"],
-            status=r["status"],
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
+    async with session_scope() as session:
+        rows = await repo.find_dedup_candidates(session, exception_type, file_name, limit)
+    return [IssueRecord.model_validate(row, from_attributes=True) for row in rows]
 
 
 async def create_issue(
@@ -149,35 +77,17 @@ async def create_issue(
     if severity not in ("low", "medium", "high", "critical"):
         raise ValueError(f"severity must be one of low/medium/high/critical, got {severity!r}")
 
-    await _ensure_table_once()
-    pool = await _get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO issues (title, exception_type, file_name, root_cause, commit_sha, severity)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, title, exception_type, file_name, root_cause,
-                      commit_sha, severity, status, created_at;
-            """,
-            title,
-            exception_type,
-            file_name,
-            root_cause,
-            commit_sha,
-            severity,
+    async with session_scope() as session:
+        row = await repo.add_issue(
+            session,
+            title=title,
+            exception_type=exception_type,
+            file_name=file_name,
+            root_cause=root_cause,
+            commit_sha=commit_sha,
+            severity=severity,
         )
-
-    return IssueRecord(
-        id=row["id"],
-        title=row["title"],
-        exception_type=row["exception_type"],
-        file_name=row["file_name"],
-        root_cause=row["root_cause"],
-        commit_sha=row["commit_sha"],
-        severity=row["severity"],
-        status=row["status"],
-        created_at=row["created_at"],
-    )
+    return IssueRecord.model_validate(row, from_attributes=True)
 
 
 async def draft_hotfix_pr(
@@ -216,14 +126,6 @@ async def draft_hotfix_pr(
         description=description,
         status="draft",
     )
-
-
-async def close_pool() -> None:
-    """Cleanly close the asyncpg pool."""
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
 
 
 server = MCPServer("tracker_mcp")

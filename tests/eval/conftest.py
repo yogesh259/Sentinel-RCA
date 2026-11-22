@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 os.environ.setdefault("ENV", "local")
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel_rca",
+    "postgresql://sentinel:sentinel@localhost:5432/sentinel_rca",
 )
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("WEBHOOK_SECRET", "local-dev-secret-123")
