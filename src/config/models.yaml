@@ -1,0 +1,8 @@
+# LiteLLM model per agent role. Groq's free tier allows 8k tokens/minute *per model*, so the
+# two parallel agents use different Groq models and never share a rate-limit budget.
+orchestrator: gemini/gemini-2.5-flash
+locator: groq/openai/gpt-oss-120b
+history: groq/openai/gpt-oss-20b
+rca_writer: gemini/gemini-2.5-pro
+reviewer: gemini/gemini-2.5-flash
+baseline: gemini/gemini-2.5-pro

@@ -1,0 +1,180 @@
+{
+  "cases": [
+    {
+      "id": "victim-npe-discount",
+      "group": "victim",
+      "demo": true,
+      "title": "Checkout crashes when no discount code is sent",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.lang.NullPointerException: Cannot invoke \"String.length()\" because \"discountCode\" is null\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:33)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103)\n\tat org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:255)\n\tat org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)",
+      "gold_files": [
+        "src/main/java/com/victim/controller/OrderController.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/controller/OrderController.java": [
+          [
+            31,
+            35
+          ]
+        ]
+      },
+      "introduced_by": "4b66e57",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-connection-leak",
+      "group": "victim",
+      "demo": true,
+      "title": "Payments start failing after a few hundred orders",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.sql.SQLException: FATAL: sorry, too many clients already\n\tat org.postgresql.core.v3.ConnectionFactoryImpl.doAuthentication(ConnectionFactoryImpl.java:693)\n\tat java.sql/java.sql.DriverManager.getConnection(DriverManager.java:683)\n\tat com.victim.service.PaymentService.chargeCustomer(PaymentService.java:31)\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:37)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103)\n\tat org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:255)\n\tat org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)",
+      "gold_files": [
+        "src/main/java/com/victim/service/PaymentService.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/service/PaymentService.java": [
+          [
+            29,
+            42
+          ]
+        ]
+      },
+      "introduced_by": "aede1dd",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-npe-discount-dispatch",
+      "group": "victim",
+      "demo": false,
+      "title": "500 on POST /api/orders without discountCode",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.lang.NullPointerException: Cannot invoke \"String.length()\" because \"discountCode\" is null\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:33)\n\tat org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1067)",
+      "gold_files": [
+        "src/main/java/com/victim/controller/OrderController.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/controller/OrderController.java": [
+          [
+            31,
+            35
+          ]
+        ]
+      },
+      "introduced_by": "4b66e57",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-pool-exhausted",
+      "group": "victim",
+      "demo": false,
+      "title": "Connection pool exhausted under load",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "org.postgresql.util.PSQLException: Connection pool exhausted, leaked connection never returned\n\tat com.victim.service.PaymentService.chargeCustomer(PaymentService.java:31)\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:37)",
+      "gold_files": [
+        "src/main/java/com/victim/service/PaymentService.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/service/PaymentService.java": [
+          [
+            29,
+            42
+          ]
+        ]
+      },
+      "introduced_by": "aede1dd",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-zero-amount",
+      "group": "victim",
+      "demo": false,
+      "title": "Orders with a 100% discount are rejected",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.lang.IllegalArgumentException: Charge amount must be positive\n\tat com.victim.service.PaymentService.chargeCustomer(PaymentService.java:24)\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:37)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103)\n\tat org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:255)\n\tat org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)",
+      "gold_files": [
+        "src/main/java/com/victim/service/PaymentService.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/service/PaymentService.java": [
+          [
+            22,
+            25
+          ]
+        ]
+      },
+      "introduced_by": "2e8081a",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-numeric-customer-id",
+      "group": "victim",
+      "demo": true,
+      "title": "Checkout crashes when customerId is sent as a number",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.lang.ClassCastException: class java.lang.Integer cannot be cast to class java.lang.String (java.lang.Integer and java.lang.String are in module java.base of loader 'bootstrap')\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:28)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103)\n\tat org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:255)\n\tat org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)",
+      "gold_files": [
+        "src/main/java/com/victim/controller/OrderController.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/controller/OrderController.java": [
+          [
+            27,
+            29
+          ]
+        ]
+      },
+      "introduced_by": "d92579c",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-npe-coupon",
+      "group": "victim",
+      "demo": false,
+      "title": "Coupon lookup fails for orders without a coupon",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.lang.NullPointerException: coupon lookup failure\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:33)",
+      "gold_files": [
+        "src/main/java/com/victim/controller/OrderController.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/controller/OrderController.java": [
+          [
+            31,
+            35
+          ]
+        ]
+      },
+      "introduced_by": "4b66e57",
+      "fix_commit": null
+    },
+    {
+      "id": "victim-statement-leak",
+      "group": "victim",
+      "demo": false,
+      "title": "Statements and connections left open after each payment",
+      "repo_url": "https://github.com/yogesh259/sentinel-victim-service",
+      "base_commit": "aede1ddfb402e0297929b03f89d8269e2effc411",
+      "stack_trace": "java.sql.SQLException: Statement and Connection open leak\n\tat com.victim.service.PaymentService.chargeCustomer(PaymentService.java:32)\n\tat com.victim.controller.OrderController.createOrder(OrderController.java:37)",
+      "gold_files": [
+        "src/main/java/com/victim/service/PaymentService.java"
+      ],
+      "gold_lines": {
+        "src/main/java/com/victim/service/PaymentService.java": [
+          [
+            29,
+            42
+          ]
+        ]
+      },
+      "introduced_by": "aede1dd",
+      "fix_commit": null
+    }
+  ]
+}

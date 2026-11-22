@@ -1,51 +1,28 @@
 [project]
-name = "sentinel-rca"
-version = "0.5.0"
-description = "Self-hosted, event-driven Error Root-Cause Analysis engine with MCP, LangGraph, and deterministic guardrails."
+name = "sentinel"
+version = "2.0.0"
+description = "LangGraph multi-agent root-cause analysis: stack trace + GitHub repo -> cited root cause, introducing commit and a draft fix."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "pydantic>=2.9.0",
-    "pydantic-settings>=2.6.0",
-    "redis>=5.2.0",
-    "psycopg[binary]>=3.2.0",
-    "langgraph>=0.2.50",
-    "langchain-core>=0.3.20",
-    "mcp>=1.2.0",
-    "httpx>=0.27.0",
-    "streamlit>=1.40.0",
-    "langgraph-checkpoint-postgres>=3.2.1",
+    "langgraph>=1.2.24",
     "litellm>=1.40.0",
-    "detect-secrets>=1.5.0",
-    "alembic>=1.20.1",
-    "sqlalchemy[asyncio]>=2.1",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.3",
+    "pygithub>=2.10.0",
+    "streamlit>=1.67.0",
 ]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "ruff>=0.7.0",
-]
+dev = ["ruff>=0.7.0"]
+
+[tool.uv]
+package = false
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-ignore = ["E501"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-pythonpath = ["."]
-markers = [
-    "unit: Pure, fast unit tests",
-    "integration: Integration tests (API, DB, Redis, MCP)",
-    "eval: RCA benchmark and evaluation tests",
-    "no_llm_mock: Do not apply automatic mock to llm_complete",
-]
-

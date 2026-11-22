@@ -1,23 +1,16 @@
-FROM python:3.11-slim
+# Streamlit demo image (Hugging Face Spaces uses port 7860).
+FROM python:3.12-slim
 
-WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home sentinel
+WORKDIR /home/sentinel/app
 
-# Install uv for fast dependency resolution
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy dependency files first for layer caching
-COPY pyproject.toml uv.lock ./
+COPY --chown=sentinel . .
+USER sentinel
 
-# Install production dependencies
-RUN uv sync --frozen --no-dev
-
-# Copy application code and console
-COPY src/ src/
-# Schema migrations, run by `python -m src.db.migrate` before the API starts.
-COPY alembic.ini ./
-COPY migrations/ migrations/
-COPY ui/ ui/
-
-EXPOSE 8000
-
-CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV PUBLIC_DEMO=true
+EXPOSE 7860
+CMD ["streamlit", "run", "streamlit_app/home.py", "--server.port=7860", "--server.address=0.0.0.0"]

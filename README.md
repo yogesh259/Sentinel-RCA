@@ -1,103 +1,79 @@
-# Sentinel-RCA
+# Sentinel
 
-Self-hosted root-cause analysis for production exceptions. Point your error webhook (Sentry or a plain JSON payload) at it, and for each new exception it:
+**Paste a stack trace and a GitHub repo. A team of agents finds the root cause, cites the exact lines and the commit that introduced it, and drafts a fix that a human approves before any PR is opened.**
 
-1. drops alert-storm repeats for $0 (Redis fingerprinting),
-2. strips secrets and PII before anything is stored or sent to a model,
-3. finds the commits that last touched the failing lines (real `git blame` via GitHub),
-4. has an LLM judge which candidate commit caused the failure, with cited evidence, or say none did,
-5. files an issue or proposes a hotfix, pausing for a human when the change is risky or the model is unsure.
-
-Runs at $0 on free tiers: Render, Neon Postgres, Upstash Redis, Groq (Gemini as fallback).
+> Demo GIF: _record a 30-second run on a sample incident and put it here._
 
 ## How it works
 
-```mermaid
-flowchart LR
-    WH[Webhook<br/>Sentry / generic] --> GW[FastAPI gateway<br/>HMAC · redact · rate limit]
-    GW -->|duplicate fingerprint| DROP[200 OK, $0]
-    GW -->|202 + background run| G
+![Sentinel graph](docs/graph.png)
 
-    subgraph G[LangGraph workflow · Postgres checkpoints]
-        P[parse_trace] --> D[dedup<br/>8B judge] --> I[investigate_git<br/>retrieve → 70B judge → validate] --> A[authorisation_gate<br/>pure Python policy] --> E[execute_action]
-    end
+| Node | Type | What it does |
+|---|---|---|
+| `prepare_repo` | code | Partial-clones the repo into `.cache/repos` (or reuses it) and checks out the commit to analyse. |
+| `parse_trace` | code | Parses Java (`Caused by:` chains) and Python (chained exceptions) traces and marks frames that are files in the repo. |
+| `orchestrator` | LLM → `Plan` | Picks up to 3 focus frames and 1–3 testable hypotheses. |
+| `locator` | tool agent → `Finding` | Reads the code around the focus frames. Tools: `read_file`, `search_code`, `list_dir`. |
+| `history` | tool agent → `Finding` | Blames the failing lines and reads diffs to find the introducing commit. Tools: `recent_commits`, `blame_lines`, `show_commit`. |
+| `rca_writer` | LLM → `RCAReport` | Combines both findings into ranked suspects, the introducing commit and an optional unified-diff patch. |
+| `reviewer` | code + LLM → `ReviewResult` | Code checks first: files exist, line ranges are real, the commit exists, and the patch passes `git apply --check`. Then an LLM checks every claim against the evidence. If the report is not grounded, the locator gets one retry. |
+| `human_review` | `interrupt()` | Pauses the run until a person approves or rejects. |
+| `create_pr` | code | Branches, applies, commits, pushes and opens a **draft** PR with the RCA as its description. Under `DRY_RUN` it only shows the PR it would open. |
+| `report_external` | code | No frame is in the repo, so it reports a library or infrastructure error without calling an LLM. |
+| `fail` | code | Ends the run and shows the error. |
 
-    A -. interrupt .-> H[Human approval<br/>RBAC: staff_sre / junior_dev]
-    H -. resume .-> A
+Design choices:
+- **Tool restriction is enforced in code.** Each agent's tool loop only receives its own tools, so the history agent cannot read files and the locator cannot run git.
+- **Every LLM output is a Pydantic model.** Invalid output is sent back to the model once with the validation error. No reply is ever parsed as free text.
+- **Code checks before LLM checks.** The reviewer never needs an LLM to notice a file that doesn't exist or a patch that doesn't apply.
+- **Untrusted input is fenced.** Stack traces, code and git output go into prompts inside `<untrusted_data>`. Tools are read-only, paths can't leave the repo, and output is truncated.
+- **No infrastructure.** LangGraph's `InMemorySaver` exists only because `interrupt()` needs a checkpointer. A restart drops paused runs, by design.
 
-    P & I -->|MCP stdio| GIT[git_mcp<br/>GITHUB_TOKEN only]
-    P -->|MCP stdio| TR[trace_mcp<br/>no secrets]
-    D & E -->|MCP stdio| TK[tracker_mcp<br/>DATABASE_URL only]
-```
+## Why a graph and not one agent?
 
-**One agentic step, everything else deterministic.** `investigate_git` is where the AI does real work:
+`evals/` runs the same dataset through four configurations:
 
-- **Retrieve (code):** blame ±5 lines around the two deepest repository frames, add recent commits per file, rank by *exact-line blame > nearby blame > recently touched*, then fetch diff hunks and a file window for the top 3.
-- **Judge (LLM):** one 70B call returns a schema-validated `RCAVerdict`: suspect commit or `null`, confidence, severity, mechanism, evidence citations, fix suggestion.
-- **Validate (code):** any SHA the model wasn't shown is discarded and confidence forced to `low`. The model cannot steer the workflow toward a commit it invented.
+| Config | What it is |
+|---|---|
+| `baseline` | One agent with all six tools and one prompt, same output schema |
+| `graph_single_model` | Sentinel, every role on one model |
+| `graph_routed` | Sentinel with per-role models from `models.yaml` |
+| `graph_no_reviewer` | Routed, without the reviewer and retry (ablation) |
 
-The gate then picks the action from those validated fields. Hotfix PRs, CRITICAL severity and low-confidence issues wait for a human. Prompt-injection traces are blocked before they reach the model.
+_Results table: run the four configs (see below) and paste `evals/results/*.md` here._
 
-## Design decisions
+## Model routing
 
-| Decision | Why |
-| :-- | :-- |
-| Fixed workflow with one LLM judgement, not an autonomous tool-calling agent | One deep call per incident fits Groq's free-tier limits, is predictable, and can be evaluated. Retrieval is where most RCA accuracy comes from, so it's deterministic and testable. |
-| Code chooses the action; the LLM only fills a schema | A wrong model answer can at worst produce a low-confidence issue for a human to review. It can never open a PR on its own. |
-| The model may answer "no suspect" | Many failures (infrastructure outages, bad input) aren't caused by a recent commit. Forcing a pick produces confident nonsense. |
-| MCP servers as stdio subprocesses with scoped env | `git_mcp` sees only the GitHub token and `tracker_mcp` only the DB URL; LLM keys never reach tool processes. Tests use the same protocol in-process. |
-| Approvals live only in LangGraph checkpoints (Postgres) | One source of truth: a thread is pending exactly when its checkpoint holds an interrupt, and it survives restarts. |
-| detect-secrets with entropy plugins off | The entropy plugins flag identifiers and commit SHAs in stack traces, which would destroy the evidence. Pattern and keyword plugins plus email/bearer/LLM-key rules cover the real secrets. |
-| Redact at the gateway, the parse node and in `git_mcp` | Defence in depth. The eval checks every prompt actually sent to the model. |
+| Role | Model | Why |
+|---|---|---|
+| orchestrator | `gemini/gemini-2.5-flash` | Short planning call |
+| locator | `groq/openai/gpt-oss-120b` | Fast tool loop |
+| history | `groq/openai/gpt-oss-20b` | Runs in parallel with the locator. Groq's free tier limits tokens per minute *per model*, so the two never share a budget. |
+| rca_writer | `gemini/gemini-2.5-pro` | The judgement call: strongest model |
+| reviewer | `gemini/gemini-2.5-flash` | Checks claims against evidence |
 
-## Evaluation
+Change any role in [`src/config/models.yaml`](src/config/models.yaml). Any LiteLLM model name works. A run on the demo repo uses about 15–20k tokens in 12–15 LLM calls and stays inside both free tiers.
 
-`tests/eval/` runs **the real nodes** against 23 golden scenarios: 8 true bugs, 3 abstentions, 5 storm repeats, 4 secret leaks and 3 prompt injections.
-
-- **Mock mode** (`uv run pytest -m eval`, runs in CI, $0): GitHub and the LLM are mocked, and the stub model always picks the top-ranked candidate. It measures parsing, path resolution, retrieval ranking and the safety properties, **not model accuracy**.
-- **Live mode** (`uv run pytest -m eval --live`): the real victim repository and real models, plus an LLM judge scoring grounding, with spend capped by `EVAL_MAX_COST_USD`. Results go to `tests/eval/live_report.json` and the console's Eval tab.
-
-Latest mock run (retrieval and safety only):
-
-| Metric | Mock |
-| :-- | --: |
-| Repo path resolution | 100% |
-| Candidate recall@3 | 100% |
-| Top-1 by retrieval ranking | 100% |
-| Correct abstention | 66.7%: AB-03 needs model judgement, which the stub can't do |
-| Secret leak rate (state + prompts) | 0% |
-| Prompt-injection block rate (and 0 LLM calls) | 100% |
-| Storm suppression | 100% |
-
-Live results: _not yet published. Run the live eval against your victim repo and paste `markdown_report` from `tests/eval/live_report.json` here, misses included._
-
-## Quickstart
+## Run locally
 
 ```bash
-cp .env.example .env          # set GROQ_API_KEY, GITHUB_TOKEN, GITHUB_REPO, WEBHOOK_SECRET
-docker compose up --build     # Postgres, Redis, migrations, then API :8000 and console :8501
-make simulate-outage          # 1 analysed incident + 4 suppressed repeats
+pip install -r requirements.txt     # or: uv sync
+cp .env.example .env                # add GEMINI_API_KEY and GROQ_API_KEY (both have free tiers)
+
+streamlit run streamlit_app/home.py                                         # UI
+python -m src.main --trace trace.txt --repo https://github.com/owner/repo   # CLI
+python -m evals.run_eval --config graph_routed                              # evals
 ```
 
-Point your webhook at `POST /v1/incidents/ingest` with the header `X-Webhook-Signature: hex(hmac_sha256(WEBHOOK_SECRET, body))`.
+`DRY_RUN=true` (the default) never writes to GitHub. To open real draft PRs, set `DRY_RUN=false` and use a `GITHUB_TOKEN` with write access to the target repo.
 
-Generic payload:
+## Deploy
 
-```json
-{"service": "orders", "error": "NullPointerException", "stack_trace": "java.lang.NullPointerException: ...\n\tat com.acme.OrderController.create(OrderController.java:34)"}
-```
+The Dockerfile runs the Streamlit app on port 7860 with `PUBLIC_DEMO=true`, which forces dry run, caps spend at `DAILY_BUDGET_USD` per day and allows 5 runs per browser session. It works as a Hugging Face Docker Space. Streamlit Community Cloud can also deploy `streamlit_app/home.py` directly. In both cases, add the API keys as secrets.
 
-Running the API against your own Postgres/Redis (e.g. Neon + Upstash): set `DATABASE_URL` and `REDIS_URL`, run `make migrate` once per deploy, then start the API. The app never creates tables itself.
+## Limitations
 
-Schema changes (JPA-style): edit the entity in `src/db/models.py`, run `make migration m="add foo column"` to draft the revision under `migrations/versions/`, review it, then `make migrate`. `make check-schema` fails if entities and database disagree.
-
-Development: `uv run ruff check . && uv run pytest`.
-
-## Known limits
-
-- **Background runs are in-process** (`BackgroundTasks`). An in-flight analysis is lost if the container restarts mid-run; paused approvals are not. At scale this becomes a queue (Redis Streams, Cloud Tasks).
-- **`draft_hotfix_pr` produces a PR preview, not a real PR.** `git_mcp` is read-only by design. A real PR needs a separately scoped write token behind the approval gate.
-- **Blame runs against the default branch**, which may differ from the deployed revision. Passing the release SHA from Sentry would fix this.
-- **The LLM judge in live evals is the same model family as the system under test**, so its scores are a sanity check, not ground truth.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full specification.
+- Sentinel never executes code, so the root cause is inferred from code and history, not reproduced.
+- Patch correctness is not guaranteed. The reviewer only checks that the patch applies.
+- Java/Kotlin/Scala and Python traces only.
+- Public GitHub repos only, up to 5,000 files.
