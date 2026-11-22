@@ -1,99 +1,79 @@
-"""Sensitive data redaction using Microsoft Presidio (analyzer + anonymizer)."""
+"""Deterministic secret/PII redaction, applied before any LLM call or DB write.
 
+Built on Yelp's detect-secrets (pattern + keyword plugins: JWT, AWS, GitHub, Stripe,
+Slack, basic-auth URIs, private keys, `password = "..."`, ...) plus a few explicit
+patterns it does not cover (emails, bearer tokens, LLM API keys).
+
+The high-entropy plugins are disabled on purpose: on stack traces and source code they
+flag ordinary identifiers (`OrderController`, commit SHAs) and would destroy the very
+evidence the RCA needs.
+"""
+
+import re
 from functools import lru_cache
 from typing import Any
 
-from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
-from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
+from detect_secrets.core.plugins.util import get_mapping_from_secret_type_to_class
+from detect_secrets.core.scan import scan_line
+from detect_secrets.settings import transient_settings
 
-_BUILTIN_ENTITIES: tuple[str, ...] = (
-    "EMAIL_ADDRESS",
-    "IP_ADDRESS",
-    "CREDIT_CARD",
-)
+_NOISY_PLUGINS = {"Base64HighEntropyString", "HexHighEntropyString"}
 
-_CUSTOM_SECRET_PATTERNS: dict[str, str] = {
-    "JWT": r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?=*",
-    "DB_URI": (
-        r"(?:jdbc:(?:[a-zA-Z0-9_+.-]+:)?|jdbc:)?"
-        r"(?:postgresql|postgres|mysql|mariadb|oracle|sqlserver|"
-        r"mongodb(?:\+srv)?|redis|rediss|sqlite)://[^\s,;\"')}\]]+"
-        r"|jdbc:[a-zA-Z0-9_+.-]+:[^\s,;\"')}\]]+"
-    ),
-    "API_KEY": (
-        r"(?:sk-[A-Za-z0-9_-]{16,}"
-        r"|(?:sk_live_|sk_test_|pk_live_|pk_test_)[A-Za-z0-9]{16,}"
-        r"|sk_[A-Za-z0-9_]{16,}"
-        r"|gsk_[A-Za-z0-9_-]{16,}"
-        r"|(?:ghp_|gho_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{16,}"
-        r"|AKIA[A-Z0-9]{16}"
-        r"|xox[bpsa]-[A-Za-z0-9-]{20,}"
-        r"|Bearer\s+[A-Za-z0-9_\-.]{20,})"
-    ),
-    "PRIVATE_KEY": r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+# Gaps in detect-secrets' plugin set.
+_EXTRA_PATTERNS: dict[str, re.Pattern[str]] = {
+    "EMAIL_ADDRESS": re.compile(r"[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
+    "BEARER_TOKEN": re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*"),
+    "LLM_API_KEY": re.compile(r"\b(?:gsk|sk(?:-proj)?|sk-ant)[-_][A-Za-z0-9_-]{20,}"),
 }
 
-_TARGET_ENTITIES: list[str] = [*_BUILTIN_ENTITIES, *_CUSTOM_SECRET_PATTERNS.keys()]
+# A finding is masked together with the surrounding token, so a key the plugin matched
+# only partially (e.g. the first 24 chars of a Stripe key) is never half-leaked.
+_TOKEN = r"[^\s\"'`<>(){}\[\],;]*"
 
 
 @lru_cache(maxsize=1)
-def get_redaction_engines() -> tuple[AnalyzerEngine, AnonymizerEngine]:
-    """Initialize and cache Presidio engines using the lightweight en_core_web_sm model."""
-    provider = NlpEngineProvider(
-        nlp_configuration={
-            "nlp_engine_name": "spacy",
-            "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
-        }
-    )
-    analyzer = AnalyzerEngine(nlp_engine=provider.create_engine(), supported_languages=["en"])
+def _plugin_settings() -> dict:
+    """detect-secrets configuration: every built-in plugin except the entropy ones."""
+    plugins = get_mapping_from_secret_type_to_class().values()
+    return {
+        "plugins_used": [
+            {"name": p.__name__} for p in plugins if p.__name__ not in _NOISY_PLUGINS
+        ]
+    }
 
-    for entity_name, pattern_regex in _CUSTOM_SECRET_PATTERNS.items():
-        analyzer.registry.add_recognizer(
-            PatternRecognizer(
-                supported_entity=entity_name,
-                patterns=[
-                    Pattern(
-                        name=f"{entity_name.lower()}_pattern",
-                        regex=pattern_regex,
-                        score=0.95,
-                    )
-                ],
-            )
-        )
 
-    return analyzer, AnonymizerEngine()
+def _label(secret_type: str) -> str:
+    """`JSON Web Token` -> `[REDACTED_JSON_WEB_TOKEN]`."""
+    slug = re.sub(r"\W+", "_", secret_type).strip("_").upper()
+    return f"[REDACTED_{slug}]"
+
+
+def _redact_line(line: str, labels: set[str]) -> str:
+    """Mask every detect-secrets finding on one line."""
+    for secret in scan_line(line):
+        value = secret.secret_value
+        if not value or value not in line:
+            continue
+        label = _label(secret.type)
+        line = re.sub(_TOKEN + re.escape(value) + _TOKEN, label, line)
+        labels.add(label)
+    return line
 
 
 def redact_payload(text: str) -> tuple[str, list[str]]:
-    """Mask PII and developer secrets in text. Returns (sanitized_text, redaction_types)."""
+    """Mask secrets and PII in text. Returns (sanitized_text, redaction_labels)."""
     if not text:
         return text, []
 
-    analyzer, anonymizer = get_redaction_engines()
-    detected_entities = analyzer.analyze(
-        text=text,
-        entities=_TARGET_ENTITIES,
-        language="en",
-    )
-    if not detected_entities:
-        return text, []
+    labels: set[str] = set()
+    with transient_settings(_plugin_settings()):
+        text = "\n".join(_redact_line(line, labels) for line in text.split("\n"))
 
-    operators = {
-        finding.entity_type: OperatorConfig(
-            "replace",
-            {"new_value": f"[REDACTED_{finding.entity_type}]"},
-        )
-        for finding in detected_entities
-    }
-    anonymized = anonymizer.anonymize(
-        text=text,
-        analyzer_results=detected_entities,
-        operators=operators,
-    )
-    redaction_types = sorted({f"[REDACTED_{item.entity_type}]" for item in anonymized.items})
-    return anonymized.text, redaction_types
+    for name, pattern in _EXTRA_PATTERNS.items():
+        text, count = pattern.subn(f"[REDACTED_{name}]", text)
+        if count:
+            labels.add(f"[REDACTED_{name}]")
+    return text, sorted(labels)
 
 
 def redact_dict(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

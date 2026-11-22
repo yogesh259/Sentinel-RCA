@@ -18,6 +18,7 @@ class ApprovalItem(BaseModel):
     incident_id: int | None = None
     proposal: dict[str, Any]
     reason: str
+    evidence: list[dict[str, Any]] = []
     status: str = "awaiting_approval"
 
 

@@ -1,10 +1,15 @@
-"""Authorisation gate node: policy check + LangGraph interrupt()."""
+"""Authorisation gate node: deterministic action policy + HITL interrupt().
+
+The LLM proposes a root cause; this node (pure Python, no LLM) decides what may be done
+about it. Pausing via interrupt() persists the thread in the checkpointer, which is the
+single source of truth for pending approvals (see src/graph/approvals.py).
+"""
 
 import logging
 
 from langgraph.types import interrupt
 
-from src.graph.approvals import register_pending_approval, remove_pending_approval
+from src.graph.approvals import APPROVAL_INTERRUPT
 from src.graph.authorisation import (
     Action,
     AuthDecision,
@@ -16,98 +21,76 @@ from src.graph.state import RCAState, WorkflowStatus
 logger = logging.getLogger("sentinel-rca.nodes.gate")
 
 
-async def authorisation_gate_node(state: RCAState) -> dict:
-    """Node 4: Deterministic authorisation gate.
+def propose_action(state: RCAState) -> Action:
+    """Choose the action from validated state fields, never from free-form LLM text."""
+    forced = state.get("force_action")
+    if forced:
+        return forced
+    if state.get("is_duplicate"):
+        return "deduplicate"
+    if state.get("investigation_error"):
+        return "escalate"
 
-    Calls interrupt() if HITL is required, pausing the workflow.
-    """
-    current_steps = state.get("step_count", 0)
-    raw_trace = state.get("raw_trace", "")
-    force_action = state.get("force_action")
-    is_duplicate = state.get("is_duplicate", False)
-    suggested_severity = state.get("suggested_severity", "medium")
-    patch_summary = state.get("patch_summary", "")
+    confident_suspect = state.get("suspect_sha") and state.get("confidence") == "high"
+    serious = str(state.get("suggested_severity", "")).lower() in ("high", "critical")
+    if confident_suspect and serious and state.get("patch_summary"):
+        return "draft_hotfix_pr"
+    return "create_issue"
 
-    # Determine proposed action
-    if force_action in ("deduplicate", "create_issue", "draft_hotfix_pr", "escalate"):
-        action: Action = force_action  # type: ignore
-    elif is_duplicate:
-        action = "deduplicate"
-    elif patch_summary and suggested_severity.lower() in ("high", "critical"):
-        action = "draft_hotfix_pr"
-    else:
-        action = "create_issue"
 
-    commit_sha = ""
-    suspects = state.get("suspect_commits", [])
-    if suspects:
-        commit_sha = suspects[0].get("sha", "")
-
-    proposal = ProposedResolution(
-        action=action,
-        commit_sha=commit_sha,
+def build_proposal(state: RCAState) -> ProposedResolution:
+    """Assemble the proposal the policy (and, if needed, a human) will judge."""
+    return ProposedResolution(
+        action=propose_action(state),
+        commit_sha=state.get("suspect_sha", ""),
         file_path=state.get("target_file", ""),
         root_cause=state.get("root_cause", ""),
-        severity=suggested_severity,
-        patch_summary=patch_summary or None,
+        severity=state.get("suggested_severity", "medium"),
+        confidence=state.get("confidence", "low"),
+        patch_summary=state.get("patch_summary") or None,
     )
 
+
+async def authorisation_gate_node(state: RCAState) -> dict:
+    """Node 4: auto-approve, block, or pause for a human decision."""
+    proposal = build_proposal(state)
     auth = check_authorisation(
         proposal=proposal,
-        step_count=current_steps,
-        raw_trace=raw_trace,
+        step_count=state.get("step_count", 0),
+        raw_trace=state.get("raw_trace", ""),
     )
-
     update: dict = {
-        "proposal": proposal.model_dump(),
+        "proposal": auth.proposal.model_dump(),
         "auth_decision": auth.decision.value,
         "auth_reason": auth.reason,
-        "step_count": current_steps + 1,
+        "hitl_required": auth.decision == AuthDecision.HITL_REQUIRED,
+        "step_count": state.get("step_count", 0) + 1,
     }
 
     if auth.decision == AuthDecision.BLOCKED:
-        update["status"] = WorkflowStatus.ESCALATED
-        update["hitl_required"] = False
-        return update
+        return {**update, "status": WorkflowStatus.ESCALATED}
 
-    if auth.decision == AuthDecision.HITL_REQUIRED:
-        thread_id = state.get("thread_id", "default")
-        incident_id = state.get("incident_id")
-        update["hitl_required"] = True
-        update["status"] = WorkflowStatus.AWAITING_APPROVAL
+    if auth.decision == AuthDecision.AUTO_APPROVE:
+        return {**update, "status": WorkflowStatus.APPROVED}
 
-        register_pending_approval(
-            thread_id=thread_id,
-            incident_id=incident_id,
-            proposal=proposal.model_dump(),
-            reason=auth.reason,
-        )
-
-        # Interrupt workflow for human-in-the-loop review
-        hitl_response = interrupt(
-            {
-                "type": "approval_required",
-                "thread_id": thread_id,
-                "proposal": proposal.model_dump(),
-                "reason": auth.reason,
-            }
-        )
-
-        # Resumed with Command(resume=...)
-        remove_pending_approval(thread_id)
-        update["hitl_response"] = hitl_response
-
-        if isinstance(hitl_response, dict) and hitl_response.get("decision") == "reject":
-            update["status"] = WorkflowStatus.REJECTED
-        else:
-            update["status"] = WorkflowStatus.APPROVED
-
-        return update
-
-    # AUTO_APPROVE
-    update["hitl_required"] = False
-    update["status"] = WorkflowStatus.APPROVED
-    return update
+    # Pauses here; the checkpoint now lists this thread as awaiting approval. On resume
+    # LangGraph re-runs this node and interrupt() returns the reviewer's decision.
+    hitl_response = interrupt(
+        {
+            "type": APPROVAL_INTERRUPT,
+            "thread_id": state.get("thread_id", ""),
+            "incident_id": state.get("incident_id"),
+            "proposal": auth.proposal.model_dump(),
+            "reason": auth.reason,
+            "evidence": state.get("evidence", []),
+        }
+    )
+    rejected = isinstance(hitl_response, dict) and hitl_response.get("decision") == "reject"
+    return {
+        **update,
+        "hitl_response": hitl_response,
+        "status": WorkflowStatus.REJECTED if rejected else WorkflowStatus.APPROVED,
+    }
 
 
-__all__ = ["authorisation_gate_node"]
+__all__ = ["authorisation_gate_node", "build_proposal", "propose_action"]

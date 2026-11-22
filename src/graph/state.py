@@ -1,12 +1,14 @@
 """RCAState and domain context definitions for Sentinel-RCA LangGraph."""
 
+import operator
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.graph.authorisation import Action, AuthDecision
 from src.schemas.mcp.tracker import SeverityLevel
+from src.schemas.rca import Confidence
 
 
 class WorkflowStatus(StrEnum):
@@ -43,6 +45,7 @@ class ParsedTrace(BaseModel):
     class_name: str = ""
     method_name: str = ""
     line_number: int = 0
+    frames: list[dict[str, Any]] = Field(default_factory=list)
     redaction_types: list[str] = Field(default_factory=list)
 
 
@@ -58,14 +61,20 @@ class DedupResult(BaseModel):
 
 
 class GitInvestigation(BaseModel):
-    """Git commit analysis and root-cause correlation findings."""
+    """Evidence gathered from git and the LLM's validated root-cause verdict."""
 
     model_config = ConfigDict(extra="allow")
 
-    suspect_commits: list[dict[str, Any]] = Field(default_factory=list)
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    suspect_sha: str = ""
+    confidence: Confidence = "low"
     root_cause: str = ""
+    mechanism: str = ""
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
     suggested_severity: SeverityLevel | str = "medium"
     patch_summary: str = ""
+    investigation_error: str = ""
+    guardrail_events: list[str] = Field(default_factory=list)
 
 
 class AuthorisationContext(BaseModel):
@@ -89,8 +98,11 @@ class ExecutionSummary(BaseModel):
     status: WorkflowStatus | str = ""
     result: dict[str, Any] | None = None
     step_count: int = 0
-    cost: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+    # Append-only audit records: each node returns only its own entries.
+    nodes_visited: Annotated[list[str], operator.add] = Field(default_factory=list)
+    llm_calls: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
+    tool_calls: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
 
 
 class RCAState(

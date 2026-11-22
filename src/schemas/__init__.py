@@ -17,7 +17,7 @@ from src.schemas.incident import (
     WebhookResponse,
 )
 from src.schemas.mcp import (
-    BlameEntry,
+    BlameRange,
     CommitInfo,
     DiffOutput,
     IssueRecord,
@@ -54,7 +54,7 @@ __all__ = [
     "IngestResponse",
     "WebhookResponse",
     # MCP
-    "BlameEntry",
+    "BlameRange",
     "CommitInfo",
     "DiffOutput",
     "IssueRecord",

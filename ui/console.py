@@ -3,7 +3,7 @@
 Engineering control panel (NO chatbot UI) with 3 tabs:
   1. Live Outage & Chaos Simulator (fire scenarios, inspect live trace)
   2. HITL Approval Queue (review paused hotfix PRs, test RBAC staff_sre vs junior_dev)
-  3. Eval & Cost Dashboard (benchmark metrics & hybrid vs frontier cost breakdown)
+  3. Eval & Cost Dashboard (golden-scenario benchmark, live vs mock, real token cost)
 """
 
 
@@ -21,9 +21,9 @@ import streamlit as st
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me-to-a-real-secret")
-LATEST_REPORT_PATH = Path(__file__).parent.parent / "evals" / "latest_report.json"
-FALLBACK_REPORT_PATH = Path(__file__).parent.parent / "evals" / "benchmark_report.json"
-REPORT_PATH = LATEST_REPORT_PATH if LATEST_REPORT_PATH.exists() else FALLBACK_REPORT_PATH
+EVAL_DIR = Path(__file__).parent.parent / "tests" / "eval"
+# A published live run is the headline; the mock (CI) report is the fallback.
+REPORT_CANDIDATES = (EVAL_DIR / "live_report.json", EVAL_DIR / "latest_report.json")
 
 st.set_page_config(
     page_title="Sentinel-RCA · Ops Console",
@@ -441,91 +441,43 @@ with tab2:
 # ═══════════════════════════════════════════════════════════════════
 
 with tab3:
-    st.subheader("Evaluation Suite & Cost Efficiency Benchmark")
+    st.subheader("Golden-Scenario Benchmark")
+    report_path = next((p for p in REPORT_CANDIDATES if p.exists()), None)
 
-    target_report = LATEST_REPORT_PATH if LATEST_REPORT_PATH.exists() else FALLBACK_REPORT_PATH
-    if target_report.exists():
-        with open(target_report, encoding="utf-8") as f:
-            report_data = json.load(f)
-
-        mode_val = report_data.get("eval_mode") or report_data.get("mode") or "mock"
-        is_live = "live" in mode_val.lower()
-
-        if is_live:
-            st.success(
-                f"🟢 **Live Eval Run** (`groq/llama-3.1-8b-instant` + `groq/llama-3.3-70b-versatile`) — "
-                f"Evaluated with real Groq LLM APIs · Generated: `{report_data.get('timestamp')}`"
-            )
-        else:
-            st.info(
-                f"⚪ **Deterministic Mock Run** ($0 Token Spend / CI Mode) — "
-                f"Evaluated offline with deterministic test harnesses · Generated: `{report_data.get('timestamp')}`"
-            )
-
-        metrics = report_data.get("metrics", {})
-        tokens = report_data.get("tokens", {})
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(
-            "Root-Cause Accuracy",
-            f"{metrics.get('root_cause_accuracy_pct', 0)}%",
-            help="Percentage of true bugs correctly identifying the root-cause commit",
-        )
-        m2.metric(
-            "Tool Trajectory Pass",
-            f"{metrics.get('tool_trajectory_pass_pct', 100.0)}%",
-            help="Enforces execution order: trace_mcp → git_mcp → authorisation_gate",
-        )
-        m3.metric(
-            "Secret Leak Rate",
-            f"{metrics.get('secret_leak_rate_pct', 0)}%",
-            help="Must remain at 0% across all JWTs, emails, API keys, and JDBC strings",
-        )
-        m4.metric(
-            "Prompt-Injection Block Rate",
-            f"{metrics.get('prompt_injection_block_rate_pct', 0)}%",
-            help="Percentage of malicious prompt injections blocked before tool execution",
-        )
-
-        st.divider()
-        st.markdown("### Cost Comparison: Hybrid vs. Frontier-Only")
-
-        col_cost1, col_cost2, col_cost3 = st.columns(3)
-        with col_cost1:
-            st.metric(
-                "Frontier-Only Baseline",
-                f"${metrics.get('frontier_only_cost_usd', 0.3):.4f}",
-                delta="Baseline (0% saved)",
-                delta_color="off",
-            )
-        with col_cost2:
-            st.metric(
-                "Sentinel-RCA Hybrid",
-                f"${metrics.get('hybrid_routing_cost_usd', 0.05):.4f}",
-                delta=f"-{metrics.get('cost_savings_pct', 83.3)}% Spend",
-                delta_color="normal",
-            )
-        with col_cost3:
-            total_toks = tokens.get("total_tokens", 0)
-            st.metric(
-                "Total Tokens Burned",
-                f"{total_toks:,}",
-                help="Actual tokens spent during the evaluation run ($0 in mock mode)",
-            )
-
-        judge_score = metrics.get("judge_average_score")
-        if judge_score is not None:
-            st.markdown(f"**LLM-as-a-Judge Factual Grounding Score:** `{judge_score:.2f} / 5.0`")
-
-        st.divider()
-        st.markdown("### Executive Benchmark Report")
-        st.markdown(report_data.get("markdown_report", ""))
-
-        with st.expander("View Full Benchmark JSON Payload"):
-            st.json(report_data)
-
+    if report_path is None:
+        st.info("No benchmark report yet. Run `uv run pytest -m eval` (add `--live` for model accuracy).")
     else:
-        st.info(
-            "No benchmark report found at `evals/latest_report.json`. "
-            "Run `uv run pytest evals/test_evals.py` to generate the benchmark report."
-        )
+        report_data = json.loads(report_path.read_text(encoding="utf-8"))
+        metrics = report_data.get("metrics", {})
+        cost = report_data.get("cost", {})
+
+        if report_data.get("mode") == "live":
+            st.success(f"Live run · models: `{', '.join(cost.get('models', []))}` · {report_data.get('timestamp')}")
+        else:
+            st.warning(f"Mock run (CI) · {report_data.get('timestamp')}")
+        st.caption(report_data.get("interpretation", ""))
+
+        def show(value, suffix="%"):
+            return "n/a" if value is None else f"{value}{suffix}"
+
+        r1 = st.columns(4)
+        r1[0].metric("Top-1 suspect commit", show(metrics.get("top1_accuracy_pct")))
+        r1[1].metric("Correct abstention", show(metrics.get("abstention_accuracy_pct")))
+        r1[2].metric("Candidate recall@3", show(metrics.get("candidate_recall_at_3_pct")))
+        r1[3].metric("LLM-judge grounding", show(metrics.get("judge_average_score"), " / 5"))
+
+        r2 = st.columns(4)
+        r2[0].metric("Secret leak rate", show(metrics.get("secret_leak_rate_pct")))
+        r2[1].metric("Injection block rate", show(metrics.get("prompt_injection_block_rate_pct")))
+        r2[2].metric("Storm suppression", show(metrics.get("storm_suppression_pct")))
+        r2[3].metric("Latency p50 / p95", f"{show(metrics.get('latency_p50_ms'), '')} / {show(metrics.get('latency_p95_ms'), ' ms')}")
+
+        r3 = st.columns(3)
+        r3[0].metric("LLM calls", cost.get("llm_calls", 0))
+        r3[1].metric("Actual cost", f"${cost.get('actual_cost_usd', 0):.4f}")
+        r3[2].metric("If every call used 70B", f"${cost.get('all_calls_on_70b_usd', 0):.4f}")
+
+        st.divider()
+        st.markdown(report_data.get("markdown_report", ""))
+        with st.expander("Full report JSON"):
+            st.json(report_data)

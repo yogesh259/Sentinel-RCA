@@ -1,8 +1,8 @@
 """Pydantic v2 schemas for MCP tools (trace, git, tracker)."""
 
 
-from src.schemas.mcp.git import BlameEntry, CommitInfo, DiffOutput
-from src.schemas.mcp.trace import ParsedStackTrace
+from src.schemas.mcp.git import BlameRange, CommitInfo, DiffOutput
+from src.schemas.mcp.trace import ParsedStackTrace, StackFrame
 from src.schemas.mcp.tracker import (
     IssueRecord,
     IssueStatus,
@@ -14,8 +14,9 @@ from src.schemas.mcp.tracker import (
 __all__ = [
     # trace_mcp
     "ParsedStackTrace",
+    "StackFrame",
     # git_mcp
-    "BlameEntry",
+    "BlameRange",
     "CommitInfo",
     "DiffOutput",
     # tracker_mcp

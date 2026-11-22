@@ -92,6 +92,9 @@ async def ensure_traces_table() -> None:
                     final_verdict TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
+                -- CREATE TABLE IF NOT EXISTS never adds columns to an older table;
+                -- without this, inserts fail on databases created before `mode` existed.
+                ALTER TABLE execution_traces ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT '';
                 CREATE INDEX IF NOT EXISTS idx_traces_thread ON execution_traces (thread_id);
                 CREATE INDEX IF NOT EXISTS idx_traces_created ON execution_traces (created_at DESC);
                 """
@@ -162,7 +165,7 @@ async def record_execution_trace(
             )
             trace.id = row_id
     except DB_ERRORS as exc:
-        logger.debug("Postgres unavailable for trace storage (%s), stored in-memory only", exc)
+        logger.warning("Postgres unavailable for trace storage (%s), stored in-memory only", exc)
 
     return trace
 
@@ -213,36 +216,7 @@ async def update_execution_trace_verdict(
                     thread_id,
                 )
     except DB_ERRORS as exc:
-        logger.debug("Failed updating trace verdict in Postgres (%s)", exc)
-
-
-async def get_execution_trace_by_thread_id(thread_id: str) -> ExecutionTrace | None:
-    """Retrieve a single execution trace by thread ID, falling back to in-memory buffer."""
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, thread_id, incident_id, fingerprint, redacted_payload,
-                       nodes_visited, mcp_tool_calls, latency_ms, token_cost,
-                       tokens_used, mode, final_verdict, created_at
-                FROM execution_traces
-                WHERE thread_id = $1
-                ORDER BY created_at DESC
-                LIMIT 1;
-                """,
-                thread_id,
-            )
-            if row:
-                return _row_to_execution_trace(row)
-    except DB_ERRORS as exc:
-        logger.debug("Failed reading trace %s from Postgres (%s), checking in-memory buffer", thread_id, exc)
-
-    # In-memory fallback
-    for trace in _IN_MEMORY_TRACES:
-        if trace.thread_id == thread_id:
-            return trace
-    return None
+        logger.warning("Failed updating trace verdict in Postgres (%s)", exc)
 
 
 async def get_latest_execution_traces(
@@ -266,7 +240,7 @@ async def get_latest_execution_traces(
             if rows:
                 return [_row_to_execution_trace(r) for r in rows]
     except DB_ERRORS as exc:
-        logger.debug("Failed reading traces from Postgres (%s), using in-memory buffer", exc)
+        logger.warning("Failed reading traces from Postgres (%s), using in-memory buffer", exc)
 
     # In-memory fallback
     return list(_IN_MEMORY_TRACES)[:limit]

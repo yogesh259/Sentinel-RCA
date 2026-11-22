@@ -1,5 +1,7 @@
 """tracker_mcp — Standalone MCP server for issue tracking via Postgres.
 
+Receives only DATABASE_URL. Run over stdio with `python -m src.mcp_servers.tracker_mcp`.
+
 Exposes:
     search_existing_issues(exception_type, file_name) -> list[IssueRecord]
     create_issue(title, root_cause, commit_sha, severity) -> IssueRecord
@@ -10,22 +12,24 @@ Exposes:
 from pathlib import Path
 
 import asyncpg
+from mcp.server.mcpserver import MCPServer
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from src.core.config import config
+from src.core.dsn import to_plain_dsn
 from src.schemas.mcp.tracker import IssueRecord, PRPreview
 
 
-def _get_clean_dsn() -> str:
-    raw = (
-        config.database_url.get_secret_value()
-        if hasattr(config.database_url, "get_secret_value")
-        else str(config.database_url)
-    )
-    return raw.replace("postgresql+asyncpg://", "postgresql://")
+class TrackerServerSettings(BaseSettings):
+    """The only configuration this server can see (least privilege)."""
+
+    database_url: SecretStr = SecretStr("")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
-# asyncpg expects plain postgresql:// DSN
-_DSN_CLEAN = _get_clean_dsn()
+settings = TrackerServerSettings()
+
 _pool: asyncpg.Pool | None = None
 
 
@@ -33,7 +37,9 @@ async def _get_pool() -> asyncpg.Pool:
     """Return (and cache) the asyncpg connection pool."""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(_get_clean_dsn(), min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(
+            to_plain_dsn(settings.database_url.get_secret_value()), min_size=1, max_size=5
+        )
     return _pool
 
 
@@ -84,8 +90,13 @@ async def _ensure_table_once() -> None:
 async def search_existing_issues(
     exception_type: str,
     file_name: str,
+    limit: int = 5,
 ) -> list[IssueRecord]:
-    """Find existing issues matching the exception type and file name."""
+    """Return open issues sharing the exception type OR the file — dedup *candidates*.
+
+    Deliberately broad: whether a candidate is truly the same bug is decided by the
+    triage model in the dedup node, not by string equality.
+    """
     await _ensure_table_once()
     pool = await _get_pool()
     base_file = Path(file_name).name if file_name else ""
@@ -95,17 +106,19 @@ async def search_existing_issues(
             SELECT id, title, exception_type, file_name, root_cause,
                    commit_sha, severity, status, created_at
             FROM issues
-            WHERE exception_type = $1
+            WHERE status IN ('open', 'in_progress')
               AND (
-                  file_name = $2
-                  OR ($3 <> '' AND (file_name = $3 OR file_name LIKE '%' || $3))
+                  exception_type = $1
+                  OR ($2 <> '' AND file_name = $2)
+                  OR ($3 <> '' AND file_name LIKE '%' || $3)
               )
             ORDER BY created_at DESC
-            LIMIT 20;
+            LIMIT $4;
             """,
             exception_type,
             file_name,
             base_file,
+            limit,
         )
 
     return [
@@ -211,3 +224,12 @@ async def close_pool() -> None:
     if _pool is not None:
         await _pool.close()
         _pool = None
+
+
+server = MCPServer("tracker_mcp")
+for _tool in (search_existing_issues, create_issue, draft_hotfix_pr):
+    server.add_tool(_tool)
+
+
+if __name__ == "__main__":
+    server.run()

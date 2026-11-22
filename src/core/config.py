@@ -10,7 +10,9 @@ class Config(BaseSettings):
     database_url: SecretStr
     redis_url: SecretStr
     webhook_secret: SecretStr = SecretStr("")
-    mcp_auth_token: SecretStr = SecretStr("")
+    # "stdio": each MCP server is an isolated subprocess (production).
+    # "inprocess": same MCP protocol over in-memory streams (tests, quick local runs).
+    mcp_transport: Literal["stdio", "inprocess"] = "stdio"
 
     groq_api_key: SecretStr = SecretStr("")
     gemini_api_key: SecretStr = SecretStr("")

@@ -1,92 +1,119 @@
-"""Parse trace node: redaction + trace_mcp parsing."""
+"""Parse trace node: trace_mcp parsing + git_mcp repo path resolution (both over MCP)."""
 
 import logging
 
-from src.core.redaction import redact_dict
+from src.core.redaction import redact_dict, redact_payload
 from src.graph.state import RCAState
-from src.mcp_servers.git_mcp import resolve_victim_file
-from src.mcp_servers.trace_mcp import parse_stack_trace
+from src.schemas.mcp.trace import ParsedStackTrace, StackFrame
+from src.schemas.rca import TraceLocation
+from src.services import llm_router
+from src.services.mcp_client import call_tool
+from src.services.rca_prompts import build_trace_messages
 
 logger = logging.getLogger("sentinel-rca.nodes.parse_trace")
 
+# Only the deepest few frames are worth resolving/blaming; outer frames are routing noise.
+MAX_FRAMES = 3
+
+
+def sentry_payload_to_trace(payload: dict) -> str:
+    """Rebuild a JVM-style trace from a Sentry webhook so one parser handles both formats."""
+    event = payload.get("data", {}).get("event", payload.get("data", {}))
+    values = event.get("exception", {}).get("values", [])
+    if not values:
+        return ""
+
+    top = values[0]
+    lines = [f"{top.get('type', 'UnknownException')}: {top.get('value', '')}"]
+    culprit = event.get("culprit", "")
+    # Sentry lists frames outermost-first; JVM traces print deepest first.
+    for frame in reversed(top.get("stacktrace", {}).get("frames", [])):
+        func = frame.get("function", "?")
+        if culprit and "." not in func and culprit.endswith(func):
+            func = culprit
+        lines.append(f"\tat {func}({frame.get('filename', '?')}:{frame.get('lineno', 0)})")
+    return "\n".join(lines)
+
+
+async def resolve_frames(frames: list[StackFrame]) -> list[dict]:
+    """Attach the repository path to each frame (None for library/unknown files).
+
+    Resolution failures are logged, not raised: a parse result without repo paths is
+    still useful for dedup and for a human reading the issue.
+    """
+    resolved: list[dict] = []
+    for frame in frames[:MAX_FRAMES]:
+        try:
+            path = await call_tool(
+                "git",
+                "resolve_repo_path",
+                {"file_name": frame.file, "module_hint": frame.module},
+                str | None,
+            )
+        except Exception as exc:
+            logger.warning("Path resolution failed for %s: %s", frame.file, exc)
+            path = None
+        resolved.append({**frame.model_dump(), "path": path})
+    return resolved
+
+
+async def llm_locate(parsed: ParsedStackTrace, raw: str) -> tuple[ParsedStackTrace, list[dict]]:
+    """Ask the triage model to locate the failure when no regex parser recognised the format.
+
+    Best-effort: on any LLM failure the original (frameless) parse is returned.
+    """
+    try:
+        location, calls = await llm_router.complete_structured(
+            "triage", build_trace_messages(raw), TraceLocation
+        )
+    except llm_router.LLMError as exc:
+        logger.warning("Triage trace extraction unavailable: %s", exc)
+        return parsed, []
+
+    frames = [StackFrame(file=location.file, line=location.line, function=location.function)]
+    update = {"frames": frames if location.file else []}
+    if parsed.exception_type == "UnknownException":
+        update |= {
+            "exception_type": location.exception_type,
+            "exception_message": location.exception_message,
+        }
+    return parsed.model_copy(update=update), [c.usage() for c in calls]
+
 
 async def parse_trace_node(state: RCAState) -> dict:
-    """Node 1: Parse raw stack trace via trace_mcp (runs redaction first)."""
-    payload = state.get("raw_payload", {})
-    dict_redactions: list[str] = []
-    if payload:
-        payload, dict_redactions = redact_dict(payload)
+    """Node 1: Parse the redacted stack trace and locate its frames in the repository."""
+    payload, dict_redactions = redact_dict(state.get("raw_payload") or {})
+    source = (
+        state.get("raw_trace", "")
+        or payload.get("stack_trace", "")  # generic webhook format
+        or sentry_payload_to_trace(payload)
+    )
+    # Redact here, not only at the gateway: raw_trace is persisted in checkpoints and
+    # quoted in the RCA prompt, so this node must never pass an unredacted trace on.
+    raw, trace_redactions = redact_payload(source)
 
-    raw = state.get("raw_trace", "")
-    if not raw:
-        event = payload.get("data", {}).get("event", payload.get("data", {}))
-        exc_info = event.get("exception", {})
-        values = exc_info.get("values", [])
-        if values:
-            top = values[0]
-            exc_type = top.get("type", "UnknownException")
-            exc_val = top.get("value", "")
-            frames = top.get("stacktrace", {}).get("frames", [])
-            lines = [f"{exc_type}: {exc_val}"]
-            culprit = event.get("culprit", "")
-            for f in frames:
-                fn = f.get("filename", "?")
-                ln = f.get("lineno", 0)
-                func = f.get("function", "?")
-                if culprit and "." not in func and culprit.endswith(func):
-                    func = culprit
-                lines.append(f"\tat {func}({fn}:{ln})")
-            raw = "\n".join(lines)
-
-    parsed = parse_stack_trace(raw)
-    target_file = parsed.target_file
-    line_number = parsed.line_number
-    class_name = parsed.class_name
-    method_name = parsed.method_name
-
-    # Fallback to checking payload frames directly if parsing left target_file empty
-    if not target_file or target_file in ("?", "unknown"):
-        event = payload.get("data", {}).get("event", payload.get("data", {}))
-        exc_info = event.get("exception", {})
-        values = exc_info.get("values", [])
-        if values:
-            frames = values[0].get("stacktrace", {}).get("frames", [])
-            for f in reversed(frames):
-                fn = f.get("filename")
-                if fn and fn not in ("?", "unknown"):
-                    target_file = fn
-                    if not line_number and f.get("lineno"):
-                        try:
-                            line_number = int(f["lineno"])
-                        except (ValueError, TypeError):
-                            pass
-                    if not method_name and f.get("function"):
-                        method_name = str(f["function"])
-                    if not class_name and fn.endswith(".java"):
-                        class_name = fn.removesuffix(".java")
-                    break
-
-    resolved_file = resolve_victim_file(target_file) if target_file else ""
-    final_target = resolved_file or target_file
-    current_steps = state.get("step_count", 0)
-
-    combined_redactions = list(parsed.redaction_types)
-    for dr in dict_redactions:
-        if dr not in combined_redactions:
-            combined_redactions.append(dr)
+    parsed = await call_tool("trace", "parse_stack_trace", {"raw_trace": raw}, ParsedStackTrace)
+    llm_calls: list[dict] = []
+    if not parsed.frames and raw.strip():
+        parsed, llm_calls = await llm_locate(parsed, raw)
+    frames = await resolve_frames(parsed.frames)
+    # The deepest frame that lives in the repo is the one we can actually blame.
+    primary = next((f for f in frames if f["path"]), frames[0] if frames else {})
 
     return {
         "raw_payload": payload,
         "raw_trace": raw,
         "exception_type": parsed.exception_type,
         "exception_message": parsed.exception_message,
-        "target_file": final_target,
-        "class_name": class_name,
-        "method_name": method_name,
-        "line_number": line_number,
-        "redaction_types": combined_redactions,
-        "step_count": current_steps + 1,
+        "target_file": primary.get("path") or primary.get("file", ""),
+        "class_name": primary.get("module", ""),
+        "method_name": primary.get("function", ""),
+        "line_number": primary.get("line", 0),
+        "frames": frames,
+        "redaction_types": sorted(set(trace_redactions) | set(dict_redactions)),
+        "llm_calls": llm_calls,
+        "step_count": state.get("step_count", 0) + 1,
     }
 
 
-__all__ = ["parse_trace_node"]
+__all__ = ["parse_trace_node", "resolve_frames", "sentry_payload_to_trace"]

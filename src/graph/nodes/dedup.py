@@ -1,35 +1,80 @@
-"""Check for duplicate issues using tracker_mcp."""
+"""Semantic dedup node: tracker_mcp candidate search + triage-tier LLM judgement.
+
+Redis fingerprinting at the gateway already drops exact repeats for free. This node
+catches the harder case: a *different* trace (new line number, reworded message) that
+is the same underlying bug as an issue already open.
+"""
 
 import logging
 
 from src.graph.state import RCAState
-from src.mcp_servers import tracker_mcp
+from src.schemas.mcp.tracker import IssueRecord
+from src.schemas.rca import DedupVerdict
+from src.services import llm_router
+from src.services.mcp_client import call_tool
+from src.services.rca_prompts import build_dedup_messages
 
 logger = logging.getLogger("sentinel-rca.nodes.dedup")
 
 
+async def judge_duplicate(state: RCAState, issues: list[dict]) -> tuple[DedupVerdict, list[dict]]:
+    """Ask the triage model whether the incident matches one of the candidate issues.
+
+    An id the model invents (not among the candidates) is treated as "not a duplicate".
+    """
+    messages = build_dedup_messages(
+        state.get("exception_type", ""),
+        state.get("exception_message", ""),
+        state.get("target_file", ""),
+        issues,
+    )
+    verdict, calls = await llm_router.complete_structured("triage", messages, DedupVerdict)
+    if verdict.duplicate_of not in {i["id"] for i in issues}:
+        verdict = verdict.model_copy(update={"duplicate_of": None})
+    return verdict, [c.usage() for c in calls]
+
+
 async def dedup_node(state: RCAState) -> dict:
-    """Find existing issues matching this exception and target file."""
+    """Node 2: flag the incident as a duplicate of an open issue, if it is one."""
     exception_type = state.get("exception_type", "")
     target_file = state.get("target_file", "")
-    current_steps = state.get("step_count", 0)
+    steps = state.get("step_count", 0) + 1
 
     try:
-        matches = await tracker_mcp.search_existing_issues(exception_type, target_file)
-        issues = [m.model_dump() for m in matches]
-    except Exception as ex:
-        logger.warning("tracker_mcp search failed: %s", ex)
+        found = await call_tool(
+            "tracker",
+            "search_existing_issues",
+            {"exception_type": exception_type, "file_name": target_file},
+            list[IssueRecord],
+        )
+        issues = [i.model_dump(mode="json") for i in found]
+    except Exception as exc:
+        logger.warning("tracker_mcp search failed: %s", exc)
         issues = []
 
-    is_duplicate = bool(issues)
-    summary = f"Found {len(issues)} existing issue(s) for {exception_type} in {target_file}."
-    if is_duplicate:
-        summary += " Marked as duplicate."
+    verdict, llm_calls = DedupVerdict(reason="No open issue shares this exception or file."), []
+    if issues:
+        try:
+            verdict, llm_calls = await judge_duplicate(state, issues)
+        except llm_router.LLMError as exc:
+            # Failing open costs at most one duplicate ticket; failing closed could hide a new bug.
+            logger.warning("Triage dedup unavailable, treating as new: %s", exc)
+            verdict = DedupVerdict(reason=f"Dedup judgement unavailable: {exc}")
 
+    matched = [i for i in issues if i["id"] == verdict.duplicate_of]
+    summary = (
+        f"Duplicate of issue #{verdict.duplicate_of}: {verdict.reason}"
+        if matched
+        else f"New incident ({len(issues)} candidate issue(s) checked). {verdict.reason}"
+    )
     return {
-        "is_duplicate": is_duplicate,
-        "existing_issues": issues,
+        "is_duplicate": bool(matched),
+        "existing_issues": matched,
         "dedup_summary": summary,
         "triage_summary": summary,
-        "step_count": current_steps + 1,
+        "llm_calls": llm_calls,
+        "step_count": steps,
     }
+
+
+__all__ = ["dedup_node", "judge_duplicate"]

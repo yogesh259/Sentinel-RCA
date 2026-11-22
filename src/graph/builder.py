@@ -1,13 +1,13 @@
 """StateGraph wiring, edges, and checkpointer management."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from src.graph.approvals import clear_pending_approvals
 from src.graph.nodes import (
     authorisation_gate_node,
     dedup_node,
@@ -16,6 +16,7 @@ from src.graph.nodes import (
     parse_trace_node,
 )
 from src.graph.state import RCAState
+from src.services.mcp_client import record_tool_calls
 
 logger = logging.getLogger("sentinel-rca.graph.builder")
 
@@ -38,17 +39,35 @@ def set_default_checkpointer(checkpointer: BaseCheckpointSaver) -> None:
     _compiled_graph = None
 
 
+NodeFn = Callable[[RCAState], Awaitable[dict]]
+
+
+def audited(name: str, node: NodeFn) -> NodeFn:
+    """Wrap a node so each completed run appends its name and real MCP tool calls.
+
+    Done once here rather than in each node, so the audit trail can't be forgotten.
+    """
+
+    async def run(state: RCAState) -> dict:
+        with record_tool_calls() as tool_calls:
+            update = await node(state)
+        return {**update, "nodes_visited": [name], "tool_calls": tool_calls}
+
+    run.__name__ = name
+    return run
+
+
 def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     """Compile and return the stateful RCA LangGraph."""
     cp = checkpointer or get_default_checkpointer()
 
     builder = StateGraph(RCAState)
 
-    builder.add_node("parse_trace", parse_trace_node)
-    builder.add_node("dedup", dedup_node)
-    builder.add_node("investigate_git", investigate_git_node)
-    builder.add_node("authorisation_gate", authorisation_gate_node)
-    builder.add_node("execute_action", execute_node)
+    builder.add_node("parse_trace", audited("parse_trace", parse_trace_node))
+    builder.add_node("dedup", audited("dedup", dedup_node))
+    builder.add_node("investigate_git", audited("investigate_git", investigate_git_node))
+    builder.add_node("authorisation_gate", audited("authorisation_gate", authorisation_gate_node))
+    builder.add_node("execute_action", audited("execute_action", execute_node))
 
     builder.set_entry_point("parse_trace")
     builder.add_edge("parse_trace", "dedup")
@@ -69,11 +88,10 @@ def get_graph(checkpointer: BaseCheckpointSaver | None = None):
 
 
 def reset_graph() -> None:
-    """Reset graph and in-memory approvals for clean test isolation."""
+    """Reset the compiled graph and checkpointer for clean test isolation."""
     global _compiled_graph, _active_checkpointer
     _compiled_graph = None
     _active_checkpointer = None
-    clear_pending_approvals()
 
 
 __all__ = [

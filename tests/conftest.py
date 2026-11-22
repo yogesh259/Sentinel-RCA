@@ -18,6 +18,8 @@ os.environ.setdefault("GROQ_API_KEY", "gsk_mock_test_key_for_testing")
 os.environ.setdefault("GEMINI_API_KEY", "gemini_mock_test_key_for_testing")
 os.environ.setdefault("GITHUB_TOKEN", "mock_gh_token_for_testing")
 os.environ.setdefault("GITHUB_REPO", "octocat/victim-service")
+# Real MCP protocol over in-memory streams, so the httpx mocks below still apply.
+os.environ.setdefault("MCP_TRANSPORT", "inprocess")
 
 from tests.mocks import create_mock_github_client, mock_llm_complete  # noqa: E402
 

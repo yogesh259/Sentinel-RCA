@@ -1,11 +1,9 @@
 """Sentinel-RCA LangGraph coordinator package."""
 
 from src.graph.approvals import (
-    clear_pending_approvals,
-    get_all_pending_approvals,
     get_pending_approval,
-    register_pending_approval,
-    remove_pending_approval,
+    list_pending_approvals,
+    thread_config,
 )
 from src.graph.builder import (
     build_graph,
@@ -35,13 +33,11 @@ __all__ = [
     "RCAState",
     "WorkflowStatus",
     "build_graph",
-    "clear_pending_approvals",
-    "get_all_pending_approvals",
     "get_default_checkpointer",
     "get_graph",
     "get_pending_approval",
-    "register_pending_approval",
-    "remove_pending_approval",
+    "list_pending_approvals",
     "reset_graph",
     "set_default_checkpointer",
+    "thread_config",
 ]

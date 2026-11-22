@@ -4,35 +4,28 @@
 import asyncpg
 
 from src.core.config import config
+from src.core.dsn import to_plain_dsn
 
 _pool: asyncpg.Pool | None = None
 
-def _get_clean_dsn() -> str:
-    raw = (
-        config.database_url.get_secret_value()
-        if hasattr(config.database_url, "get_secret_value")
-        else str(config.database_url)
-    )
-    return raw.replace("postgresql+asyncpg://", "postgresql://")
 
-
-# asyncpg expects a plain postgresql:// DSN (no +asyncpg driver suffix)
-_DSN_CLEAN = _get_clean_dsn()
+def postgres_dsn() -> str:
+    """DATABASE_URL as a plain `postgresql://` DSN, accepted by both asyncpg and psycopg."""
+    return to_plain_dsn(config.database_url.get_secret_value())
 
 
 async def get_pool() -> asyncpg.Pool:
     """Return (and cache) the asyncpg connection pool."""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(_get_clean_dsn(), min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(postgres_dsn(), min_size=2, max_size=10)
     return _pool
 
 
 async def ensure_tables() -> None:
-    """Create the incidents, issues tables (and pgvector extension) if not present."""
+    """Create the incidents and issues tables if not present."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS incidents (

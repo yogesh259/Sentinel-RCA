@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from src.schemas.rca import Confidence
+
 MAX_GRAPH_STEPS: int = 6
 
 # ── ProposedResolution schema ─────────────────────────────────────
@@ -27,6 +29,8 @@ class ProposedResolution(BaseModel):
     file_path: str = ""
     root_cause: str = ""
     severity: str = "medium"
+    # Defaults to "low" so a proposal that forgot to state confidence is reviewed, not trusted.
+    confidence: Confidence = "low"
     patch_summary: str | None = None
 
 
@@ -78,8 +82,10 @@ def check_authorisation(
       1. Block and escalate if step_count >= max_graph_steps (circuit breaker).
       2. Block and escalate if prompt-injection patterns are detected in raw_trace.
       3. Always require HITL if action == "draft_hotfix_pr" or severity == "CRITICAL".
-      4. Auto-approve deduplicate and create_issue.
-      5. Block and escalate otherwise.
+      4. Require HITL for create_issue when RCA confidence is low, so a human confirms
+         before a possibly-wrong root cause is filed.
+      5. Auto-approve deduplicate and create_issue.
+      6. Block and escalate otherwise.
     """
     # Rule 1: Circuit breaker
     if step_count >= MAX_GRAPH_STEPS:
@@ -114,7 +120,15 @@ def check_authorisation(
             proposal=proposal,
         )
 
-    # Rule 4: Auto-approve safe actions
+    # Rule 4: Low-confidence root cause
+    if proposal.action == "create_issue" and proposal.confidence == "low":
+        return AuthResult(
+            decision=AuthDecision.HITL_REQUIRED,
+            reason="Low-confidence root cause requires Human-in-the-Loop confirmation.",
+            proposal=proposal,
+        )
+
+    # Rule 5: Auto-approve safe actions
     if proposal.action in ("deduplicate", "create_issue"):
         return AuthResult(
             decision=AuthDecision.AUTO_APPROVE,
@@ -122,7 +136,7 @@ def check_authorisation(
             proposal=proposal,
         )
 
-    # Rule 5: Fallback / unknown action
+    # Rule 6: Fallback / unknown action
     return AuthResult(
         decision=AuthDecision.BLOCKED,
         reason=f"Action '{proposal.action}' is blocked. Escalating.",

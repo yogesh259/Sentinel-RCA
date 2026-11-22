@@ -1,4 +1,4 @@
-"""Pydantic v2 schemas for git_mcp server (Phase 2)."""
+"""Pydantic v2 schemas for git_mcp server."""
 
 
 from pydantic import BaseModel, Field
@@ -21,11 +21,13 @@ class DiffOutput(BaseModel):
     diff: str
 
 
-class BlameEntry(BaseModel):
-    """Git blame result for a specific line."""
+class BlameRange(BaseModel):
+    """A contiguous block of lines last modified by one commit (real `git blame`)."""
 
     commit_sha: str
+    short_sha: str
     author: str
     date: str
-    line_number: int = Field(0, ge=0)
-    line_content: str
+    message: str
+    start_line: int = Field(..., ge=1)
+    end_line: int = Field(..., ge=1)

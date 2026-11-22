@@ -6,6 +6,9 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     envVars:
+      # prod refuses to start without the Postgres checkpointer (durable HITL approvals).
+      - key: ENV
+        value: prod
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -13,6 +16,8 @@ services:
       - key: WEBHOOK_SECRET
         generateValue: true
       - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false
       - key: LLM_DAILY_LIMIT
         value: "30"

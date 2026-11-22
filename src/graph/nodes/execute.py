@@ -3,7 +3,8 @@
 import logging
 
 from src.graph.state import RCAState, WorkflowStatus
-from src.mcp_servers import tracker_mcp
+from src.schemas.mcp.tracker import IssueRecord, PRPreview
+from src.services.mcp_client import call_tool
 
 logger = logging.getLogger("sentinel-rca.nodes.execute")
 
@@ -42,23 +43,25 @@ async def execute_node(state: RCAState) -> dict:
 
         elif action == "create_issue":
             title = f"{state.get('exception_type', 'Issue')}: {proposal.get('root_cause', '')[:80]}"
-            issue = await tracker_mcp.create_issue(
-                title=title,
-                root_cause=proposal.get("root_cause", ""),
-                commit_sha=proposal.get("commit_sha", ""),
-                severity=proposal.get("severity", "medium"),
-                exception_type=state.get("exception_type", ""),
-                file_name=state.get("target_file", ""),
-            )
-            result = {"action": "create_issue", "issue": issue.model_dump()}
+            issue_args = {
+                "title": title,
+                "root_cause": proposal.get("root_cause", ""),
+                "commit_sha": proposal.get("commit_sha", ""),
+                "severity": proposal.get("severity", "medium"),
+                "exception_type": state.get("exception_type", ""),
+                "file_name": state.get("target_file", ""),
+            }
+            issue = await call_tool("tracker", "create_issue", issue_args, IssueRecord)
+            result = {"action": "create_issue", "issue": issue.model_dump(mode="json")}
 
         elif action == "draft_hotfix_pr":
-            pr = await tracker_mcp.draft_hotfix_pr(
-                commit_sha=proposal.get("commit_sha", ""),
-                file_path=proposal.get("file_path", ""),
-                patch_summary=proposal.get("patch_summary", "Auto-generated hotfix patch"),
-            )
-            result = {"action": "draft_hotfix_pr", "pr": pr.model_dump()}
+            pr_args = {
+                "commit_sha": proposal.get("commit_sha", ""),
+                "file_path": proposal.get("file_path", ""),
+                "patch_summary": proposal.get("patch_summary") or "Auto-generated hotfix patch",
+            }
+            pr = await call_tool("tracker", "draft_hotfix_pr", pr_args, PRPreview)
+            result = {"action": "draft_hotfix_pr", "pr": pr.model_dump(mode="json")}
 
         else:
             return {

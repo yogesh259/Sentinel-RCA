@@ -14,15 +14,13 @@ from src.graph import (
     RCAState,
     WorkflowStatus,
     build_graph,
-    clear_pending_approvals,
-    get_all_pending_approvals,
     get_default_checkpointer,
     get_graph,
     get_pending_approval,
-    register_pending_approval,
-    remove_pending_approval,
+    list_pending_approvals,
     reset_graph,
     set_default_checkpointer,
+    thread_config,
 )
 from src.graph.nodes import (
     authorisation_gate_node,
@@ -30,6 +28,15 @@ from src.graph.nodes import (
     execute_node,
     investigate_git_node,
     parse_trace_node,
+)
+from src.graph.nodes.gate import propose_action
+from src.graph.nodes.investigate import enforce_candidate_guardrails
+from src.schemas.rca import Evidence, RCAVerdict
+
+ORDER_SHA = "4b66e5724817b75a701ca7e7e5ac46a9d873279a"
+NPE_TRACE = (
+    "java.lang.NullPointerException: Cannot invoke String.length() because discountCode is null\n"
+    "\tat com.victim.controller.OrderController.createOrder(OrderController.java:34)\n"
 )
 
 
@@ -39,39 +46,6 @@ def clean_graph_state():
     reset_graph()
     yield
     reset_graph()
-
-
-def test_approvals_registry():
-    """Test registration, query, removal, and clearing of HITL approvals."""
-    assert len(get_all_pending_approvals()) == 0
-
-    register_pending_approval(
-        thread_id="thread-123",
-        incident_id=456,
-        proposal={"action": "draft_hotfix_pr", "severity": "high"},
-        reason="Hotfix requires human review",
-    )
-
-    all_approvals = get_all_pending_approvals()
-    assert len(all_approvals) == 1
-    assert all_approvals[0]["thread_id"] == "thread-123"
-    assert all_approvals[0]["incident_id"] == 456
-    assert all_approvals[0]["status"] == "awaiting_approval"
-
-    item = get_pending_approval("thread-123")
-    assert item is not None
-    assert item["reason"] == "Hotfix requires human review"
-
-    removed = remove_pending_approval("thread-123")
-    assert removed is not None
-    assert removed["thread_id"] == "thread-123"
-    assert get_pending_approval("thread-123") is None
-
-    # Clear pending approvals
-    register_pending_approval("thread-456", 789, {}, "test")
-    assert len(get_all_pending_approvals()) == 1
-    clear_pending_approvals()
-    assert len(get_all_pending_approvals()) == 0
 
 
 def test_pydantic_state_submodels():
@@ -179,6 +153,7 @@ async def test_authorisation_gate_node_auto_approve():
     state: RCAState = {
         "force_action": "create_issue",
         "suggested_severity": "low",
+        "confidence": "high",
         "target_file": "UserController.java",
         "root_cause": "NPE in UserController",
         "step_count": 3,
@@ -260,33 +235,93 @@ async def test_builder_and_graph_compilation():
 
 
 @pytest.mark.asyncio
-async def test_full_graph_run_and_hitl_resume():
-    """End-to-end test of the compiled graph with HITL interrupt and resume."""
-    graph = build_graph(checkpointer=MemorySaver())
+async def test_parse_trace_resolves_repo_path():
+    """Bare file names resolve to repository paths via the git tree, not hardcoded prefixes."""
+    result = await parse_trace_node({"raw_trace": NPE_TRACE, "step_count": 0})
+    assert result["target_file"] == "src/main/java/com/victim/controller/OrderController.java"
+    assert result["frames"][0]["path"] == result["target_file"]
 
-    thread_config = {"configurable": {"thread_id": "test-hitl-thread-1"}}
+
+@pytest.mark.asyncio
+async def test_investigate_ranks_exact_line_blame_first():
+    """The commit that last changed the failing line is the top-ranked candidate."""
+    state = await parse_trace_node({"raw_trace": NPE_TRACE, "step_count": 0})
+    result = await investigate_git_node(state)
+    assert result["candidates"][0]["sha"] == ORDER_SHA
+    assert result["suspect_sha"] == ORDER_SHA
+    assert result["llm_calls"] and result["llm_calls"][0]["tier"] == "deep_rca"
+
+
+def test_guardrail_discards_hallucinated_suspect():
+    """A suspect SHA that was never retrieved is dropped and confidence forced low."""
+    verdict = RCAVerdict(
+        suspect_sha="deadbeef",
+        confidence="high",
+        severity="high",
+        root_cause="made up",
+        evidence=[Evidence(sha="deadbeef"), Evidence(sha=ORDER_SHA[:7])],
+    )
+    cleaned, events = enforce_candidate_guardrails(verdict, [ORDER_SHA])
+    assert cleaned.suspect_sha is None
+    assert cleaned.confidence == "low"
+    assert [e.sha for e in cleaned.evidence] == [ORDER_SHA]
+    assert len(events) == 3
+
+
+def test_policy_maps_state_to_actions():
+    """The LLM proposes; code decides the action from validated fields."""
+    confident = {
+        "suspect_sha": ORDER_SHA,
+        "confidence": "high",
+        "suggested_severity": "high",
+        "patch_summary": "null-check discountCode",
+    }
+    assert propose_action(confident) == "draft_hotfix_pr"
+    assert propose_action({**confident, "confidence": "medium"}) == "create_issue"
+    assert propose_action({**confident, "investigation_error": "429"}) == "escalate"
+    assert propose_action({**confident, "is_duplicate": True}) == "deduplicate"
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_issue_requires_human():
+    """create_issue with a low-confidence root cause pauses for review."""
+    graph = build_graph(checkpointer=MemorySaver())
+    state = {"thread_id": "t-low", "suggested_severity": "medium", "confidence": "low"}
+    cfg = thread_config("t-low")
+    # Run only the gate by starting the graph from it.
+    await graph.aupdate_state(cfg, state, as_node="investigate_git")
+    await graph.ainvoke(None, config=cfg)
+    pending = await get_pending_approval(graph, "t-low")
+    assert pending is not None
+    assert pending["proposal"]["action"] == "create_issue"
+    assert "Low-confidence" in pending["reason"]
+
+
+@pytest.mark.asyncio
+async def test_full_graph_run_and_hitl_resume():
+    """End-to-end: pause on a hotfix proposal, list it from the checkpoint, approve, finish."""
+    graph = build_graph(checkpointer=MemorySaver())
+    thread_id = "test-hitl-thread-1"
     initial_state: RCAState = {
-        "thread_id": "test-hitl-thread-1",
+        "thread_id": thread_id,
         "incident_id": 100,
-        "raw_trace": (
-            "java.lang.NullPointerException: pointer is null\n"
-            "\tat com.victim.controller.OrderController.placeOrder(OrderController.java:55)\n"
-        ),
+        "raw_trace": NPE_TRACE,
         "raw_payload": {},
         "step_count": 0,
     }
 
-    # First run reaches authorisation_gate requiring HITL for hotfix PR
-    _ = await graph.ainvoke(initial_state, config=thread_config)
+    paused = await graph.ainvoke(initial_state, config=thread_config(thread_id))
+    assert paused["nodes_visited"] == ["parse_trace", "dedup", "investigate_git"]
 
-    # Inspect pending approval registry
-    pending = get_pending_approval("test-hitl-thread-1")
-    assert pending is not None
-    assert pending["incident_id"] == 100
+    pending = await list_pending_approvals(graph, [thread_id, "unknown-thread"])
+    assert [p["thread_id"] for p in pending] == [thread_id]
+    assert pending[0]["incident_id"] == 100
+    assert pending[0]["proposal"]["action"] == "draft_hotfix_pr"
+    assert pending[0]["proposal"]["commit_sha"] == ORDER_SHA
 
-    # Resume workflow with approval Command
     resume_command = Command(resume={"decision": "approve", "reviewer_role": "staff_sre"})
-    resumed_state = await graph.ainvoke(resume_command, config=thread_config)
+    resumed_state = await graph.ainvoke(resume_command, config=thread_config(thread_id))
 
     assert resumed_state["status"] == "completed"
-    assert get_pending_approval("test-hitl-thread-1") is None
+    assert resumed_state["nodes_visited"][-2:] == ["authorisation_gate", "execute_action"]
+    assert await get_pending_approval(graph, thread_id) is None

@@ -13,6 +13,7 @@ API Endpoints:
 import json
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -22,13 +23,14 @@ from langgraph.types import Command
 from src.core.config import config
 from src.core.redaction import redact_dict
 from src.graph import (
-    get_all_pending_approvals,
     get_graph,
     get_pending_approval,
-    remove_pending_approval,
+    list_pending_approvals,
+    set_default_checkpointer,
+    thread_config,
 )
 from src.graph.authorisation import check_rbac
-from src.mcp_servers.tracker_mcp import ensure_issues_table
+from src.graph.checkpointer import open_checkpointer
 from src.schemas.approval import (
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
@@ -36,9 +38,9 @@ from src.schemas.approval import (
 )
 from src.schemas.incident import IngestResponse
 from src.schemas.trace import ExecutionTrace
+from src.services.mcp_client import open_mcp_sessions
 from src.services.observability import (
     ensure_traces_table,
-    get_execution_trace_by_thread_id,
     get_latest_execution_traces,
     record_execution_trace,
     update_execution_trace_verdict,
@@ -60,94 +62,58 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 # ── Background Worker ──────────────────────────────────────────────
 
 
+def summarise_run(state: dict) -> dict:
+    """Aggregate the audit records the nodes appended into execution_traces columns."""
+    llm_calls = state.get("llm_calls", [])
+    return {
+        "nodes_visited": state.get("nodes_visited", []),
+        "mcp_tool_calls": state.get("tool_calls", []),
+        "tokens_used": sum(c["input_tokens"] + c["output_tokens"] for c in llm_calls),
+        "token_cost": sum(c["cost_usd"] for c in llm_calls),
+        "mode": ", ".join(sorted({c["model"] for c in llm_calls})) or "no_llm",
+    }
+
+
 async def run_rca_workflow(
     thread_id: str,
     incident_id: int | None,
     fingerprint: str,
     payload: dict,
-    mode: str = "",
 ) -> None:
-    """Execute the LangGraph RCA workflow in the background and record telemetry."""
-    logger.info(
-        "Executing RCA workflow in background: thread_id=%s incident_id=%s mode=%s",
-        thread_id,
-        incident_id,
-        mode,
-    )
+    """Execute the LangGraph RCA workflow in the background and record its audit trace."""
+    logger.info("Running RCA workflow: thread_id=%s incident_id=%s", thread_id, incident_id)
     t0 = time.perf_counter()
     graph = get_graph()
-    config = {"configurable": {"thread_id": thread_id}}
-    sanitized_payload, _p_types = redact_dict(payload)
+    sanitized_payload, _ = redact_dict(payload)
     initial_state = {
         "thread_id": thread_id,
         "incident_id": incident_id,
         "fingerprint": fingerprint,
         "raw_payload": sanitized_payload,
     }
+
     try:
-        final_state = await graph.ainvoke(initial_state, config=config)
-        latency_ms = (time.perf_counter() - t0) * 1000
-        logger.info(
-            "Workflow finished for %s: status=%s in %.2fms",
-            thread_id,
-            final_state.get("status"),
-            latency_ms,
-        )
-
-        cost_info = final_state.get("cost", {})
-        tokens_used = cost_info.get("tokens_used", 0)
-        cost_usd = cost_info.get("cost_usd", 0.0)
-
-        nodes_visited = [
-            "parse_trace",
-            "dedup",
-            "investigate_git",
-            "authorisation_gate",
-        ]
-        if final_state.get("status") in ("completed", "escalated", "rejected"):
-            nodes_visited.append("execute_action")
-
-        tool_calls: list[dict] = []
-        if final_state.get("suspect_commits"):
-            tool_calls.append(
-                {
-                    "tool": "git_mcp.get_recent_commits",
-                    "file": final_state.get("target_file"),
-                }
-            )
-            tool_calls.append(
-                {
-                    "tool": "git_mcp.get_commit_diff",
-                    "sha": final_state["suspect_commits"][0].get("sha"),
-                }
-            )
-        if final_state.get("result"):
-            action = final_state.get("proposal", {}).get("action", "unknown")
-            tool_calls.append({"tool": f"tracker_mcp.{action}", "result": final_state["result"]})
-
-        is_interrupted = bool(final_state.get("__interrupt__")) or (
-            get_pending_approval(thread_id) is not None
-        )
-        if is_interrupted:
-            verdict = "AWAITING_APPROVAL"
-        else:
-            verdict = final_state.get("status") or "completed"
-
-        await record_execution_trace(
-            thread_id=thread_id,
-            incident_id=incident_id,
-            fingerprint=fingerprint,
-            redacted_payload=sanitized_payload,
-            nodes_visited=nodes_visited,
-            mcp_tool_calls=tool_calls,
-            latency_ms=latency_ms,
-            token_cost=cost_usd,
-            tokens_used=tokens_used,
-            mode=mode,
-            final_verdict=verdict,
-        )
+        final_state = await graph.ainvoke(initial_state, config=thread_config(thread_id))
+        paused = await get_pending_approval(graph, thread_id) is not None
+        verdict = "AWAITING_APPROVAL" if paused else str(final_state.get("status") or "completed")
+        summary = summarise_run(final_state)
     except Exception as exc:
-        logger.error("RCA background workflow failed for %s: %s", thread_id, exc, exc_info=True)
+        # Still record the run: a silently vanished incident is worse than a failed one.
+        logger.error("RCA workflow failed for %s: %s", thread_id, exc, exc_info=True)
+        verdict = "ERROR"
+        summary = summarise_run({})
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    logger.info("Workflow %s finished: verdict=%s in %.0fms", thread_id, verdict, latency_ms)
+    await record_execution_trace(
+        thread_id=thread_id,
+        incident_id=incident_id,
+        fingerprint=fingerprint,
+        redacted_payload=sanitized_payload,
+        latency_ms=latency_ms,
+        final_verdict=verdict,
+        **summary,
+    )
 
 
 # ── Lifespan ───────────────────────────────────────────────────────
@@ -155,16 +121,19 @@ async def run_rca_workflow(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup / shutdown hooks."""
+    """Startup / shutdown hooks: tables, durable checkpointer, connection cleanup."""
     logger.info("Starting Sentinel-RCA …")
     try:
         await ensure_tables()
-        await ensure_issues_table()
         await ensure_traces_table()
         logger.info("Postgres tables ensured.")
     except Exception as exc:
         logger.warning("Postgres init failed (%s) — running without DB persistence.", exc)
-    yield
+
+    async with open_checkpointer() as checkpointer, open_mcp_sessions():
+        set_default_checkpointer(checkpointer)
+        yield
+
     await close_redis()
     await close_pool()
     logger.info("Sentinel-RCA shut down.")
@@ -304,7 +273,8 @@ async def ingest_incident(
     except Exception:
         logger.warning("Postgres insert failed — incident queued in-memory only.")
 
-    thread_id = f"thread_{fingerprint[:16]}"
+    # Unique per run: a recurring fingerprint after the dedup TTL must not resume an old thread.
+    thread_id = f"thread_{fingerprint[:12]}_{uuid.uuid4().hex[:8]}"
 
     # Step 7: Dispatch LangGraph workflow via BackgroundTasks
     background_tasks.add_task(
@@ -313,7 +283,6 @@ async def ingest_incident(
         incident_id=incident_id,
         fingerprint=fingerprint,
         payload=redacted_payload,
-        mode=mode,
     )
 
     response.status_code = status.HTTP_202_ACCEPTED
@@ -331,18 +300,22 @@ async def ingest_incident(
 
 
 @app.get("/v1/approvals", response_model=list[ApprovalItem])
-async def list_pending_approvals() -> list[ApprovalItem]:
-    """List all paused incidents currently awaiting human review."""
-    items = get_all_pending_approvals()
+async def list_approvals() -> list[ApprovalItem]:
+    """List incidents whose checkpoint is paused on an approval interrupt."""
+    candidates = [
+        t.thread_id
+        for t in await get_latest_execution_traces(limit=100)
+        if t.final_verdict == "AWAITING_APPROVAL"
+    ]
     return [
         ApprovalItem(
             thread_id=item["thread_id"],
             incident_id=item.get("incident_id"),
             proposal=item.get("proposal", {}),
             reason=item.get("reason", ""),
-            status=item.get("status", "awaiting_approval"),
+            evidence=item.get("evidence", []),
         )
-        for item in items
+        for item in await list_pending_approvals(get_graph(), candidates)
     ]
 
 
@@ -351,76 +324,37 @@ async def submit_approval_decision(
     thread_id: str,
     body: ApprovalDecisionRequest,
 ) -> ApprovalDecisionResponse:
-    """Submit a human approval/rejection decision and resume the workflow.
+    """Apply a human decision and resume the paused checkpoint.
 
-    Enforces deterministic RBAC:
-      - Only 'staff_sre' may approve 'draft_hotfix_pr'.
-      - Other roles are rejected with 403 Forbidden.
+    RBAC: only 'staff_sre' may approve 'draft_hotfix_pr' (others get 403).
     """
-    pending = get_pending_approval(thread_id)
+    graph = get_graph()
+    pending = await get_pending_approval(graph, thread_id)
     if not pending:
         raise HTTPException(
             status_code=404,
             detail=f"Approval thread '{thread_id}' not found or already resolved.",
         )
 
-    proposal = pending.get("proposal", {})
-    action = proposal.get("action", "")
-
-    # RBAC gate
+    action = pending.get("proposal", {}).get("action", "")
     allowed, rbac_reason = check_rbac(action, body.reviewer_role)
     if not allowed and body.decision == "approve":
         raise HTTPException(status_code=403, detail=rbac_reason)
 
-    # Resume LangGraph thread
-    graph = get_graph()
-    config = {"configurable": {"thread_id": thread_id}}
     command = Command(resume={"decision": body.decision, "reviewer_role": body.reviewer_role})
-
     try:
-        resumed_state = await graph.ainvoke(command, config=config)
+        resumed_state = await graph.ainvoke(command, config=thread_config(thread_id))
     except Exception as exc:
         logger.error("Failed to resume thread %s: %s", thread_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error resuming workflow thread: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Error resuming workflow thread: {exc}") from exc
 
-    remove_pending_approval(thread_id)
-
-    # Update trace verdict in Postgres & in-memory buffer
-    updated_verdict = "REJECTED" if body.decision == "reject" else "APPROVED"
-
-    try:
-        extra_tools: list[dict] = []
-        if resumed_state.get("result"):
-            res_action = resumed_state.get("proposal", {}).get("action", action)
-            extra_tools.append(
-                {"tool": f"tracker_mcp.{res_action}", "result": resumed_state["result"]}
-            )
-
-        existing_trace = await get_execution_trace_by_thread_id(thread_id)
-        nodes = (
-            list(existing_trace.nodes_visited)
-            if existing_trace
-            else ["parse_trace", "dedup", "investigate_git", "authorisation_gate"]
-        )
-        if "execute_action" not in nodes and body.decision == "approve":
-            nodes.append("execute_action")
-
-        tools = list(existing_trace.mcp_tool_calls) if existing_trace else []
-        for et in extra_tools:
-            if et not in tools:
-                tools.append(et)
-
-        await update_execution_trace_verdict(
-            thread_id=thread_id,
-            final_verdict=updated_verdict,
-            nodes_visited=nodes,
-            mcp_tool_calls=tools,
-        )
-    except Exception as exc:
-        logger.warning("Could not update trace verdict for thread %s: %s", thread_id, exc)
+    summary = summarise_run(resumed_state)
+    await update_execution_trace_verdict(
+        thread_id=thread_id,
+        final_verdict="REJECTED" if body.decision == "reject" else "APPROVED",
+        nodes_visited=summary["nodes_visited"],
+        mcp_tool_calls=summary["mcp_tool_calls"],
+    )
 
     return ApprovalDecisionResponse(
         status="resumed",

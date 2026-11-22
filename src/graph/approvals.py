@@ -1,48 +1,43 @@
-"""In-memory pending approvals registry for human-in-the-loop (HITL) reviews."""
+"""Pending HITL approvals, read straight from LangGraph checkpoints.
 
-_PENDING_APPROVALS: dict[str, dict] = {}
+There is no separate approvals table or in-memory registry: a thread is "awaiting
+approval" exactly when its checkpoint holds an unresolved `approval_required`
+interrupt. One source of truth, so the list can never drift from what can resume.
+"""
 
+from typing import Any
 
-def register_pending_approval(
-    thread_id: str,
-    incident_id: int | None,
-    proposal: dict,
-    reason: str,
-) -> None:
-    """Register a pending approval requiring human-in-the-loop review."""
-    _PENDING_APPROVALS[thread_id] = {
-        "thread_id": thread_id,
-        "incident_id": incident_id,
-        "proposal": proposal,
-        "reason": reason,
-        "status": "awaiting_approval",
-    }
+APPROVAL_INTERRUPT = "approval_required"
 
 
-def get_all_pending_approvals() -> list[dict]:
-    """Retrieve all pending approvals currently awaiting review."""
-    return list(_PENDING_APPROVALS.values())
+def thread_config(thread_id: str) -> dict:
+    """LangGraph run config addressing one incident's thread."""
+    return {"configurable": {"thread_id": thread_id}}
 
 
-def get_pending_approval(thread_id: str) -> dict | None:
-    """Retrieve a specific pending approval by workflow thread_id."""
-    return _PENDING_APPROVALS.get(thread_id)
+async def get_pending_approval(graph: Any, thread_id: str) -> dict | None:
+    """Return the approval request a paused thread is waiting on, or None."""
+    snapshot = await graph.aget_state(thread_config(thread_id))
+    for pending in getattr(snapshot, "interrupts", ()) or ():
+        value = pending.value
+        if isinstance(value, dict) and value.get("type") == APPROVAL_INTERRUPT:
+            return value
+    return None
 
 
-def remove_pending_approval(thread_id: str) -> dict | None:
-    """Remove and return a pending approval by thread_id once reviewed."""
-    return _PENDING_APPROVALS.pop(thread_id, None)
-
-
-def clear_pending_approvals() -> None:
-    """Clear all pending approvals (used during testing or state resets)."""
-    _PENDING_APPROVALS.clear()
+async def list_pending_approvals(graph: Any, thread_ids: list[str]) -> list[dict]:
+    """Return approval requests for those candidate threads that are still paused."""
+    pending = []
+    for thread_id in dict.fromkeys(thread_ids):
+        request = await get_pending_approval(graph, thread_id)
+        if request:
+            pending.append(request)
+    return pending
 
 
 __all__ = [
-    "clear_pending_approvals",
-    "get_all_pending_approvals",
+    "APPROVAL_INTERRUPT",
     "get_pending_approval",
-    "register_pending_approval",
-    "remove_pending_approval",
+    "list_pending_approvals",
+    "thread_config",
 ]
