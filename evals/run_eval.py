@@ -148,7 +148,7 @@ def main() -> None:
     parser.add_argument("--config", choices=CONFIGS, required=True)
     parser.add_argument("--group", help="victim or public (default: both)")
     parser.add_argument("--ids", help="comma-separated case ids")
-    parser.add_argument("--model", default="gemini/gemini-2.5-pro", help="model for graph_single_model")
+    parser.add_argument("--model", default="gemini/gemini-3.8-flash", help="model for graph_single_model")
     args = parser.parse_args()
 
     # Settings are read on first use (get_settings), so env overrides set here still apply.

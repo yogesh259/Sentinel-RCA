@@ -46,11 +46,11 @@ _Results table: run the four configs (see below) and paste `evals/results/*.md` 
 
 | Role | Model | Why |
 |---|---|---|
-| orchestrator | `gemini/gemini-2.5-flash` | Short planning call |
+| orchestrator | `gemini/gemini-3.8-flash` | Short planning call |
 | locator | `groq/openai/gpt-oss-120b` | Fast tool loop |
 | history | `groq/openai/gpt-oss-20b` | Runs in parallel with the locator. Groq's free tier limits tokens per minute *per model*, so the two never share a budget. |
-| rca_writer | `gemini/gemini-2.5-pro` | The judgement call: strongest model |
-| reviewer | `gemini/gemini-2.5-flash` | Checks claims against evidence |
+| rca_writer | `gemini/gemini-3.8-flash` | The judgement call (swap in a stronger model if your key has one) |
+| reviewer | `gemini/gemini-3.8-flash` | Checks claims against evidence |
 
 Change any role in [`src/config/models.yaml`](src/config/models.yaml). Any LiteLLM model name works. A run on the demo repo uses about 15–20k tokens in 12–15 LLM calls and stays inside both free tiers.
 
