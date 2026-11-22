@@ -8,8 +8,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock ./
 
-# Install production dependencies
-RUN uv sync --frozen --no-dev
+# Install production dependencies and spaCy language model
+RUN uv sync --frozen --no-dev && uv run python -m spacy download en_core_web_sm
 
 # Copy application code and console
 COPY src/ src/
