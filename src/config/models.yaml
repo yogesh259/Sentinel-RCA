@@ -1,0 +1,8 @@
+# Models per agent role, preferred first. On quota, overload, timeout or a rejected key the call moves to
+# the next model. Free tiers limit usage per model, so spreading roles across models stretches them.
+orchestrator: [gemini/gemini-3.5-flash-lite, gemini/gemini-3.1-flash-lite, gemini/gemini-3.5-flash, groq/qwen/qwen3.8-27b]
+locator: [groq/openai/gpt-oss-120b, gemini/gemini-3.5-flash, gemini/gemini-3.7-flash, groq/qwen/qwen3.8-27b]
+history: [groq/openai/gpt-oss-20b, gemini/gemini-3.5-flash-lite, groq/qwen/qwen3.8-27b]
+rca_writer: [gemini/gemini-3.6-flash, gemini/gemini-3.7-flash, gemini/gemini-3.8-flash, gemini/gemini-3.5-flash, groq/openai/gpt-oss-120b, groq/qwen/qwen3.8-27b]
+reviewer: [gemini/gemini-3.5-flash-lite, gemini/gemini-3.1-flash-lite, gemini/gemini-3.5-flash, groq/qwen/qwen3.8-27b]
+baseline: [gemini/gemini-3.6-flash, gemini/gemini-3.7-flash, gemini/gemini-3.8-flash, groq/openai/gpt-oss-120b, groq/qwen/qwen3.8-27b]

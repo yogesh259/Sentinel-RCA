@@ -1,0 +1,28 @@
+[project]
+name = "sentinel"
+version = "2.0.0"
+description = "LangGraph multi-agent root-cause analysis: stack trace + GitHub repo -> cited root cause, introducing commit and a draft fix."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "langgraph>=1.2.24",
+    "litellm>=1.40.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.3",
+    "pygithub>=2.10.0",
+    "streamlit>=1.67.0",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.7.0"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
